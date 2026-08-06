@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Cho phép project test truy cập các member `internal` (RunGuardedAsync, ...) -->
+    <!-- Cho phép project test truy cập các member `internal` (operation lease, ...) -->
     <InternalsVisibleTo Include="UnitOfWork.Tests" />
   </ItemGroup>
 

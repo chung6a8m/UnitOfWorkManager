@@ -71,22 +71,49 @@ public sealed class TransactionBoundDbCommand : DbCommand
 
     public override void Cancel() => _inner.Cancel();
 
-    public override int ExecuteNonQuery() =>
-        _owner.RunGuardedAsync(() => Task.FromResult(_inner.ExecuteNonQuery())).GetAwaiter().GetResult();
-
-    public override object? ExecuteScalar() =>
-        _owner.RunGuardedAsync(() => Task.FromResult(_inner.ExecuteScalar())).GetAwaiter().GetResult();
-
-    public override void Prepare() => _owner.RunGuardedAsync(() =>
+    public override int ExecuteNonQuery()
     {
+        using var lease = _owner.EnterOperation(nameof(ExecuteNonQuery));
+        return _inner.ExecuteNonQuery();
+    }
+
+    public override object? ExecuteScalar()
+    {
+        using var lease = _owner.EnterOperation(nameof(ExecuteScalar));
+        return _inner.ExecuteScalar();
+    }
+
+    public override void Prepare()
+    {
+        using var lease = _owner.EnterOperation(nameof(Prepare));
         _inner.Prepare();
-        return Task.FromResult(true);
-    }).GetAwaiter().GetResult();
+    }
+
+    public override async Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken)
+    {
+        using var lease = _owner.EnterOperation(nameof(ExecuteNonQueryAsync));
+        return await _inner.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public override async Task<object?> ExecuteScalarAsync(CancellationToken cancellationToken)
+    {
+        using var lease = _owner.EnterOperation(nameof(ExecuteScalarAsync));
+        return await _inner.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public override async Task PrepareAsync(CancellationToken cancellationToken = default)
+    {
+        using var lease = _owner.EnterOperation(nameof(PrepareAsync));
+        await _inner.PrepareAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     protected override DbParameter CreateDbParameter() => _inner.CreateParameter();
 
-    protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior) =>
-        _owner.RunGuardedAsync(() => Task.FromResult(_inner.ExecuteReader(behavior))).GetAwaiter().GetResult();
+    protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
+    {
+        using var lease = _owner.EnterOperation(nameof(ExecuteDbDataReader));
+        return _inner.ExecuteReader(behavior);
+    }
 
     protected override void Dispose(bool disposing)
     {
@@ -95,6 +122,8 @@ public sealed class TransactionBoundDbCommand : DbCommand
 
         base.Dispose(disposing);
     }
+
+    public override ValueTask DisposeAsync() => _inner.DisposeAsync();
 
     private static void EnsureBoundResource(object? value, object expected, string resourceName)
     {

@@ -156,20 +156,14 @@ public class ScopeLifecycleTests
         await root.InitializeAsync();
         var operationStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseOperation = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         using var ownerSettlementStarted = new ManualResetEventSlim();
         using var foreignDisposeStarted = new ManualResetEventSlim();
         using var foreignDisposeFinished = new ManualResetEventSlim();
         Exception? ownerSettlementException = null;
         Exception? foreignDisposeException = null;
         Exception? lifecycleLockHolderException = null;
-        var activeOperation = root.RunGuardedAsync(async () =>
-        {
-            operationStarted.TrySetResult();
-            await releaseOperation.Task;
-            return true;
-        });
+        var activeLease = root.EnterOperation("active test operation");
+        operationStarted.TrySetResult();
         Task? lifecycleLockHolder = null;
         Thread? ownerSettlementThread = null;
         Thread? foreignDisposeThread = null;
@@ -183,8 +177,10 @@ public class ScopeLifecycleTests
             {
                 ownsRoot.Value = true;
                 holdRootLock.Value = true;
-                lifecycleLockHolderException = await Record.ExceptionAsync(
-                    () => root.RunGuardedAsync(() => Task.FromResult(true)));
+                lifecycleLockHolderException = Record.Exception(() =>
+                {
+                    using var ignored = root.EnterOperation("competing test operation");
+                });
             });
             await rootLockHeld.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -263,8 +259,7 @@ public class ScopeLifecycleTests
             }
             finally
             {
-                releaseOperation.TrySetResult();
-                await activeOperation.WaitAsync(TimeSpan.FromSeconds(5));
+                activeLease.Dispose();
             }
         }
 

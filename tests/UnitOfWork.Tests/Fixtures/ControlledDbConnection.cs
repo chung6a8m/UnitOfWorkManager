@@ -7,11 +7,11 @@ namespace UnitOfWork.Tests.Fixtures;
 
 internal sealed class ControlledConnectionFactory : IDbConnectionFactory
 {
-    private readonly Queue<ControlledDbConnection> _connections;
+    private readonly Queue<DbConnection> _connections;
 
-    public ControlledConnectionFactory(params ControlledDbConnection[] connections)
+    public ControlledConnectionFactory(params DbConnection[] connections)
     {
-        _connections = new Queue<ControlledDbConnection>(connections);
+        _connections = new Queue<DbConnection>(connections);
     }
 
     public int CreateCount { get; private set; }

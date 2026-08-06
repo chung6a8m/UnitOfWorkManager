@@ -20,13 +20,8 @@ public class ConcurrencyGuardTests
         var scope = root.AcquireScope();
         await root.InitializeAsync();
         var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseOperation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var activeOperation = root.RunGuardedAsync(async () =>
-        {
-            operationStarted.TrySetResult();
-            await releaseOperation.Task;
-            return true;
-        });
+        var lease = root.EnterOperation("test operation");
+        operationStarted.TrySetResult();
 
         try
         {
@@ -41,8 +36,7 @@ public class ConcurrencyGuardTests
         }
         finally
         {
-            releaseOperation.TrySetResult();
-            await activeOperation;
+            lease.Dispose();
         }
 
         await scope.CompleteAsync();
@@ -63,13 +57,8 @@ public class ConcurrencyGuardTests
         var scope = root.AcquireScope();
         await root.InitializeAsync();
         var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseOperation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var activeOperation = root.RunGuardedAsync(async () =>
-        {
-            operationStarted.TrySetResult();
-            await releaseOperation.Task;
-            return true;
-        });
+        var lease = root.EnterOperation("test operation");
+        operationStarted.TrySetResult();
 
         try
         {
@@ -82,8 +71,7 @@ public class ConcurrencyGuardTests
         }
         finally
         {
-            releaseOperation.TrySetResult();
-            await activeOperation;
+            lease.Dispose();
         }
 
         scope.Dispose();

@@ -27,6 +27,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
     private int _lifecycleState = (int)UnitOfWorkLifecycleState.Initializing;
     private int _completionOutcome = (int)UnitOfWorkCompletionOutcome.None;
     private int _operationInProgress;
+    private string? _activeOperationName;
 
     internal RootUnitOfWork(
         DbConnection connection,
@@ -61,6 +62,8 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         }
     }
     internal DbTransaction? Transaction => _transaction;
+    internal bool HasActiveOperation => Volatile.Read(ref _operationInProgress) != 0;
+    internal string? ActiveOperationName => Volatile.Read(ref _activeOperationName);
 
     DbConnection IUnitOfWorkContext.Connection => Connection;
 
@@ -157,7 +160,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
                 if (LifecycleState != UnitOfWorkLifecycleState.Active)
                     throw new UnitOfWorkStateException("The unit of work root cannot be finalized in its current state.");
 
-                if (Volatile.Read(ref _operationInProgress) != 0)
+                if (HasActiveOperation)
                 {
                     settle = static () => Task.CompletedTask;
                     return false;
@@ -181,7 +184,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         return true;
     }
 
-    internal async Task<T> RunGuardedAsync<T>(Func<Task<T>> operation)
+    internal UnitOfWorkOperationLease EnterOperation(string operationName)
     {
         lock (_lifecycleLock)
         {
@@ -190,16 +193,20 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
             if (Interlocked.CompareExchange(ref _operationInProgress, 1, 0) != 0)
             {
                 throw new UnitOfWorkConcurrencyException(
-                    "The root unit of work is already executing another operation.");
+                    $"The root unit of work is already executing another operation " +
+                    $"('{ActiveOperationName}'); operation '{operationName}' was rejected.");
             }
-        }
 
-        try
-        {
-            return await operation();
+            Volatile.Write(ref _activeOperationName, operationName);
+            return new UnitOfWorkOperationLease(this);
         }
-        finally
+    }
+
+    internal void ReleaseOperation()
+    {
+        lock (_lifecycleLock)
         {
+            Volatile.Write(ref _activeOperationName, null);
             Interlocked.Exchange(ref _operationInProgress, 0);
         }
     }

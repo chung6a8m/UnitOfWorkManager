@@ -11,14 +11,14 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
-    <PackageReference Include="Dapper" Version="2.1.79" />
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="RepoDb" Version="1.15.1" />
+    <PackageReference Include="RepoDb.MySql" Version="1.15.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\UnitOfWork.Core\UnitOfWork.Core.csproj" />
-    <ProjectReference Include="..\..\samples\UnitOfWork.Sample.Console\UnitOfWork.Sample.Console.csproj" />
+    <ProjectReference Include="..\UnitOfWork.RepoDb.ProviderTests.Shared\UnitOfWork.RepoDb.ProviderTests.Shared.csproj" />
   </ItemGroup>
 
 </Project>

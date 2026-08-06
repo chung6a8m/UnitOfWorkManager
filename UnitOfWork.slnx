@@ -8,6 +8,11 @@
     <Project Path="src/UnitOfWork.Core/UnitOfWork.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/UnitOfWork.RepoDb.MySql.Tests/UnitOfWork.RepoDb.MySql.Tests.csproj" />
+    <Project Path="tests/UnitOfWork.RepoDb.MySqlConnector.Tests/UnitOfWork.RepoDb.MySqlConnector.Tests.csproj" />
+    <Project Path="tests/UnitOfWork.RepoDb.PostgreSql.Tests/UnitOfWork.RepoDb.PostgreSql.Tests.csproj" />
+    <Project Path="tests/UnitOfWork.RepoDb.ProviderTests.Shared/UnitOfWork.RepoDb.ProviderTests.Shared.csproj" />
+    <Project Path="tests/UnitOfWork.RepoDb.SqlServer.Tests/UnitOfWork.RepoDb.SqlServer.Tests.csproj" />
     <Project Path="tests/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb.Tests/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb.Tests.csproj" />
     <Project Path="tests/UnitOfWork.Sample.WebApi.Tests/UnitOfWork.Sample.WebApi.Tests.csproj" />
     <Project Path="tests/UnitOfWork.Tests/UnitOfWork.Tests.csproj" />

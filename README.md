@@ -214,6 +214,36 @@ kiểm tra token trước/sau operation và Unit of Work lifecycle vẫn nhận 
 token trực tiếp. Xem chi tiết tại
 [`samples/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb/README.md`](samples/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb/README.md).
 
+## Test tương thích Dapper và RepoDb provider
+
+`Dapper.QueryMultiple*` dùng một command và một reader cho toàn bộ các result
+set. Vì vậy `GridReader` còn sống đồng nghĩa operation lease của root Unit of
+Work vẫn đang được giữ, kể cả khi result set hiện tại đã được buffer. Luôn
+`Dispose`/`DisposeAsync` `GridReader` trước khi chạy command tiếp theo trên cùng
+root.
+
+Bộ test mặc định gồm Dapper `QueryMultiple` và RepoDb SQLite metadata lifecycle.
+Bốn provider ngoài SQLite nằm trong bốn test project riêng vì RepoDb dùng các
+mapper và metadata cache static theo process, trong khi mọi provider đều nhìn
+thấy runtime connection type `TransactionBoundDbConnection`.
+
+Chạy solution thông thường không yêu cầu Docker. Các provider facts sẽ skip rõ
+ràng khi chưa đặt environment variable tương ứng:
+
+```powershell
+dotnet test UnitOfWork.slnx
+```
+
+Chạy full compatibility matrix bằng Docker Compose:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/verify-repodb-dapper-compatibility.ps1
+```
+
+Script khởi động SQL Server, PostgreSQL và MySQL; chạy đủ 8 contract cho từng
+RepoDb provider; rồi fail nếu có provider test nào failed, skipped hoặc
+`notExecuted`. Dùng `-KeepContainers` khi cần giữ container để điều tra lỗi.
+
 ## Test integration SQLite
 
 Test dùng database SQLite file-based thật, được tạo bằng tên ngẫu nhiên trong
@@ -268,12 +298,22 @@ src/UnitOfWork.Core/
 
 tests/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb.Tests/
   WebApiSampleTests.cs
+  RepoDbSqliteMetadataTests.cs
+
+tests/UnitOfWork.RepoDb.ProviderTests.Shared/
+  RepoDbProviderContract.cs
+
+tests/UnitOfWork.RepoDb.SqlServer.Tests/
+tests/UnitOfWork.RepoDb.PostgreSql.Tests/
+tests/UnitOfWork.RepoDb.MySql.Tests/
+tests/UnitOfWork.RepoDb.MySqlConnector.Tests/
 
 tests/UnitOfWork.Sample.WebApi.Tests/
   WebApiSampleTests.cs
 
 tests/UnitOfWork.Tests/
   ConsoleSampleTests.cs
+  DapperQueryMultipleTests.cs
   ScopeLifecycleTests.cs
   TransactionInvariantTests.cs
   ManagerIsolationTests.cs

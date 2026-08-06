@@ -143,7 +143,7 @@ public class ScopeLifecycleTests
         Action? onRootFinished = null) =>
         new(
             connection,
-            (_, _, _) => throw new NotSupportedException("No repository is needed by lifecycle tests."),
+            (_, _) => throw new NotSupportedException("No repository is needed by lifecycle tests."),
             () => true,
             onRootFinished ?? (() => { }));
 }

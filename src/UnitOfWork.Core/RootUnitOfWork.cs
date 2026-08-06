@@ -10,13 +10,14 @@ internal sealed class RootUnitOfWork
     private const string CleanupExceptionDataKey = "UnitOfWorkCleanupException";
 
     private readonly IDbConnection _connection;
-    private readonly Func<Type, IDbConnection, IDbTransaction?, object> _repositoryFactory;
+    private readonly Func<Type, IDbConnection, object> _repositoryFactory;
     private readonly Dictionary<Type, object> _repositories = new();
     private readonly Func<bool> _isCurrentRoot;
     private readonly Action _onRootFinished;
     private readonly object _lifecycleLock = new();
 
     private IDbTransaction? _transaction;
+    private IDbConnection? _boundConnection;
     private Task? _initializationTask;
     private int _activeScopeCount;
     private int _rollbackRequested;
@@ -26,7 +27,7 @@ internal sealed class RootUnitOfWork
 
     internal RootUnitOfWork(
         IDbConnection connection,
-        Func<Type, IDbConnection, IDbTransaction?, object> repositoryFactory,
+        Func<Type, IDbConnection, object> repositoryFactory,
         Func<bool> isCurrentRoot,
         Action onRootFinished)
     {
@@ -42,7 +43,15 @@ internal sealed class RootUnitOfWork
         (UnitOfWorkLifecycleState)Volatile.Read(ref _lifecycleState);
     internal UnitOfWorkCompletionOutcome CompletionOutcome =>
         (UnitOfWorkCompletionOutcome)Volatile.Read(ref _completionOutcome);
-    internal IDbConnection Connection => _connection;
+    internal IDbConnection Connection
+    {
+        get
+        {
+            EnsureUsable();
+            return _boundConnection
+                ?? throw new UnitOfWorkStateException("The unit of work transaction has not been initialized.");
+        }
+    }
     internal IDbTransaction? Transaction => _transaction;
 
     internal UnitOfWorkScope AcquireScope()
@@ -91,6 +100,7 @@ internal sealed class RootUnitOfWork
             }
 
             _transaction = _connection.BeginTransaction();
+            _boundConnection = new TransactionBoundDbConnection(_connection, _transaction, this);
             Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Active);
             completion.TrySetResult();
         }
@@ -173,7 +183,7 @@ internal sealed class RootUnitOfWork
         var type = typeof(T);
         if (!_repositories.TryGetValue(type, out var repository))
         {
-            repository = _repositoryFactory(type, _connection, _transaction);
+            repository = _repositoryFactory(type, Connection);
             _repositories[type] = repository;
         }
 

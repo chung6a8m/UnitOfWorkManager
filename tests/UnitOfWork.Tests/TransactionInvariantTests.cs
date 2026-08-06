@@ -1,0 +1,140 @@
+using System.Data;
+using UnitOfWork.Core;
+using UnitOfWork.Core.Exceptions;
+using UnitOfWork.Tests.Fixtures;
+using Xunit;
+
+namespace UnitOfWork.Tests;
+
+public class TransactionInvariantTests
+{
+    [Fact]
+    public async Task Repository_Command_Without_Manual_Transaction_Is_Rolled_Back()
+    {
+        using var db = new SqliteTestDb();
+        var root = CreateRoot(db.CreateConnection());
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        var repository = root.GetRepository<TransactionCapturingCounterRepository>();
+        repository.Insert(7);
+        await scope.RollbackAsync();
+
+        Assert.NotNull(repository.CommandTransaction);
+        Assert.NotSame(root.Transaction, repository.CommandTransaction);
+        Assert.Equal(0, db.CountRows());
+    }
+
+    [Fact]
+    public async Task Connection_Facade_Rejects_Resource_Ownership_Operations()
+    {
+        using var db = new SqliteTestDb();
+        var root = CreateRoot(db.CreateConnection());
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        var connection = scope.Connection;
+
+        Assert.Throws<UnitOfWorkStateException>(() => connection.Open());
+        Assert.Throws<UnitOfWorkStateException>(() => connection.Close());
+        Assert.Throws<UnitOfWorkStateException>(() => connection.Dispose());
+        Assert.Throws<UnitOfWorkStateException>(() => connection.BeginTransaction());
+        Assert.Throws<UnitOfWorkStateException>(() => connection.BeginTransaction(IsolationLevel.Serializable));
+        Assert.Throws<UnitOfWorkStateException>(() => connection.ChangeDatabase("other"));
+        Assert.Throws<UnitOfWorkStateException>(() => connection.ConnectionString = "Data Source=other.db");
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Command_Rejects_Foreign_Connection_And_Transaction()
+    {
+        using var db = new SqliteTestDb();
+        var root = CreateRoot(db.CreateConnection());
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        using var foreignConnection = db.CreateConnection();
+        using var command = scope.Connection.CreateCommand();
+        var foreignTransaction = new ForeignTransaction();
+
+        Assert.Throws<UnitOfWorkStateException>(() => command.Connection = null);
+        Assert.Throws<UnitOfWorkStateException>(() => command.Connection = foreignConnection);
+        Assert.Throws<UnitOfWorkStateException>(() => command.Transaction = null);
+        Assert.Throws<UnitOfWorkStateException>(() => command.Transaction = foreignTransaction);
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Transaction_Metadata_Cannot_Control_Root_Transaction()
+    {
+        using var db = new SqliteTestDb();
+        var root = CreateRoot(db.CreateConnection());
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        using var command = scope.Connection.CreateCommand();
+        var transaction = command.Transaction;
+
+        Assert.NotNull(transaction);
+        Assert.NotSame(root.Transaction, transaction);
+        Assert.Throws<UnitOfWorkStateException>(() => transaction.Commit());
+        Assert.Throws<UnitOfWorkStateException>(() => transaction.Rollback());
+        Assert.Throws<UnitOfWorkStateException>(() => transaction.Dispose());
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Raw_Connection_Is_Not_Exposed_Through_Public_Context()
+    {
+        using var db = new SqliteTestDb();
+        var rawConnection = db.CreateConnection();
+        var root = CreateRoot(rawConnection);
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        Assert.NotSame(rawConnection, scope.Connection);
+
+        await scope.RollbackAsync();
+    }
+
+    private static RootUnitOfWork CreateRoot(IDbConnection connection) =>
+        new(
+            connection,
+            (type, boundConnection) => type == typeof(TransactionCapturingCounterRepository)
+                ? new TransactionCapturingCounterRepository(boundConnection)
+                : throw new NotSupportedException(),
+            () => true,
+            () => { });
+
+    private sealed class TransactionCapturingCounterRepository
+    {
+        private readonly IDbConnection _connection;
+
+        public TransactionCapturingCounterRepository(IDbConnection connection) => _connection = connection;
+
+        public IDbTransaction? CommandTransaction { get; private set; }
+
+        public void Insert(int value)
+        {
+            using var command = _connection.CreateCommand();
+            CommandTransaction = command.Transaction;
+            command.CommandText = "INSERT INTO Counter (Value) VALUES ($value);";
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = "$value";
+            parameter.Value = value;
+            command.Parameters.Add(parameter);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    private sealed class ForeignTransaction : IDbTransaction
+    {
+        public IDbConnection? Connection => null;
+        public IsolationLevel IsolationLevel => IsolationLevel.ReadCommitted;
+
+        public void Commit() { }
+        public void Rollback() { }
+        public void Dispose() { }
+    }
+}

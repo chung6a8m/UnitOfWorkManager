@@ -12,7 +12,7 @@ public class DisposalTests : Fixtures.UnitOfWorkTestBase
     {
         using var db = new SqliteTestDb();
         var uow = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c, tr) : throw new NotSupportedException());
+            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
         await uow.BeginTransactionAsync();
 
         Assert.Equal(uow.OwnerFlowId, CoreUoW.AmbientFlowId);
@@ -27,7 +27,7 @@ public class DisposalTests : Fixtures.UnitOfWorkTestBase
     {
         using var db = new SqliteTestDb();
         var uow = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c, tr) : throw new NotSupportedException());
+            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
         await uow.BeginTransactionAsync();
 
         uow.Dispose();
@@ -42,7 +42,7 @@ public class DisposalTests : Fixtures.UnitOfWorkTestBase
     {
         using var db = new SqliteTestDb();
         var manager = new UnitOfWorkManager(db, (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c, tr) : throw new NotSupportedException());
+            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
 
         var first = await manager.BeginAsync();
         await first.CommitAsync();

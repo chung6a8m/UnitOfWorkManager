@@ -16,7 +16,7 @@ public class AsyncFlowIsolationTests : Fixtures.UnitOfWorkTestBase
         // guard KHÔNG chặn trường hợp hợp lệ (task con thật sự thuộc cùng flow logic).
         using var db = new SqliteTestDb();
         var uow = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c, tr) : throw new NotSupportedException());
+            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
         await uow.BeginTransactionAsync();
 
         await Task.Run(() =>
@@ -34,7 +34,7 @@ public class AsyncFlowIsolationTests : Fixtures.UnitOfWorkTestBase
     {
         using var db = new SqliteTestDb();
         var uow = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c, tr) : throw new NotSupportedException());
+            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
         await uow.BeginTransactionAsync();
 
         UnitOfWorkConcurrencyException? caught = null;
@@ -66,7 +66,7 @@ public class AsyncFlowIsolationTests : Fixtures.UnitOfWorkTestBase
         using var dbB = new SqliteTestDb();
 
         var uowA = new CoreUoW(dbA.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c, tr) : throw new NotSupportedException());
+            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
         await uowA.BeginTransactionAsync();
 
         UnitOfWorkConcurrencyException? caught = null;
@@ -78,7 +78,7 @@ public class AsyncFlowIsolationTests : Fixtures.UnitOfWorkTestBase
             // SQLite chỉ cho một write transaction trên mỗi file. Dùng database riêng để
             // test này chỉ đo flow isolation, không bị SQLITE_BUSY che khuất kết quả guard.
             var uowB = new CoreUoW(dbB.CreateConnection(), (t, c, tr) =>
-                t == typeof(ICounterRepository) ? new CounterRepository(c, tr) : throw new NotSupportedException());
+                t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
             await uowB.BeginTransactionAsync(); // giờ AmbientFlowId trong flow B trỏ tới uowB
 
             try

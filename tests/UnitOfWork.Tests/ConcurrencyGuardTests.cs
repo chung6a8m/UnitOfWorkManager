@@ -14,7 +14,7 @@ public class ConcurrencyGuardTests : Fixtures.UnitOfWorkTestBase
         // này trong luồng gọi hiện tại.
         var uow = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
             t == typeof(ICounterRepository)
-                ? new CounterRepository(c, tr)
+                ? new CounterRepository(c)
                 : throw new NotSupportedException());
         return uow;
     }

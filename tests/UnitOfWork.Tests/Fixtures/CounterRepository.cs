@@ -8,25 +8,21 @@ public interface ICounterRepository
 }
 
 /// <summary>
-/// Repository "thật" chạy qua IDbConnection được UnitOfWork bọc (GuardedDbConnection) —
-/// dùng để chứng minh guard hoạt động xuyên suốt cả tầng Repository, không chỉ ở
-/// CommitAsync/RollbackAsync.
+/// Repository chỉ nhận IDbConnection do UnitOfWork cung cấp; nó không tự quản lý
+/// transaction của command.
 /// </summary>
 public class CounterRepository : ICounterRepository
 {
     private readonly IDbConnection _connection;
-    private readonly IDbTransaction? _transaction;
 
-    public CounterRepository(IDbConnection connection, IDbTransaction? transaction)
+    public CounterRepository(IDbConnection connection)
     {
         _connection = connection;
-        _transaction = transaction;
     }
 
     public void Insert(int value)
     {
         using var cmd = _connection.CreateCommand();
-        cmd.Transaction = _transaction;
         cmd.CommandText = "INSERT INTO Counter (Value) VALUES ($value);";
         var p = cmd.CreateParameter();
         p.ParameterName = "$value";

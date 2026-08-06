@@ -9,7 +9,7 @@ public class CommitRollbackIntegrationTests : Fixtures.UnitOfWorkTestBase
     private static UnitOfWorkManager CreateManager(SqliteTestDb db) =>
         new(db, (type, conn, tran) =>
         {
-            if (type == typeof(ICounterRepository)) return new CounterRepository(conn, tran);
+            if (type == typeof(ICounterRepository)) return new CounterRepository(conn);
             throw new NotSupportedException($"Repository chưa đăng ký: {type.Name}");
         });
 

@@ -157,19 +157,13 @@ Các đổi tên P0 vẫn áp dụng: `IUnitOfWork` thành `IUnitOfWorkScope` /
 `IUnitOfWorkContext`, `CommitAsync()` thành `CompleteAsync()`, bỏ
 `ClearCurrent()`, và bỏ `command.Transaction = transaction`.
 
-## Sample Console + SQLite
+## Samples
 
-Sample runnable tại `samples/UnitOfWork.Sample.Console` dùng SQLite file-based
-thật và minh họa:
+### Console + SQLite
 
-- outer/inner service cùng commit một root transaction;
-- inner scope không complete buộc toàn bộ root rollback;
-- repository cache theo root;
-- command timeout từ `UnitOfWorkOptions`;
-- cancellation trước `BeginAsync()`;
-- concurrency guard trong toàn bộ lifetime của streaming reader.
-
-Chạy sample:
+Sample runnable tại `samples/UnitOfWork.Sample.Console` dùng ADO.NET và SQLite
+file-based thật để minh họa trực tiếp lifecycle, nested scope, rollback,
+repository cache, timeout, cancellation và concurrency guard.
 
 ```powershell
 dotnet run --project samples/UnitOfWork.Sample.Console/UnitOfWork.Sample.Console.csproj
@@ -177,6 +171,26 @@ dotnet run --project samples/UnitOfWork.Sample.Console/UnitOfWork.Sample.Console
 
 Xem giải thích và output mong đợi tại
 [`samples/UnitOfWork.Sample.Console/README.md`](samples/UnitOfWork.Sample.Console/README.md).
+
+### ASP.NET Core Controllers + Dapper + SQLite
+
+Sample tại `samples/UnitOfWork.Sample.WebApi.Controllers` minh họa cấu trúc gần
+ứng dụng doanh nghiệp:
+
+```text
+Controller -> Application Service -> Nested Service -> Dapper Repository
+```
+
+Sample cung cấp API đọc dữ liệu, commit outer/inner service, rollback do inner
+scope incomplete và diagnostics cho repository cache, command timeout,
+cancellation/ambient cleanup cùng reader concurrency guard.
+
+```powershell
+dotnet run --project samples/UnitOfWork.Sample.WebApi.Controllers/UnitOfWork.Sample.WebApi.Controllers.csproj
+```
+
+Xem endpoint, request/response mẫu và quy tắc Dapper tại
+[`samples/UnitOfWork.Sample.WebApi.Controllers/README.md`](samples/UnitOfWork.Sample.WebApi.Controllers/README.md).
 
 ## Test integration SQLite
 
@@ -193,6 +207,10 @@ Fixture xóa file `.db` và các sidecar `-journal`, `-wal`, `-shm` với retry 
 để phát hiện resource leak mà không phụ thuộc đường dẫn workspace hay máy phát
 triển cụ thể.
 
+Web API integration test dùng `WebApplicationFactory<Program>` để chạy đủ list,
+commit, rollback và diagnostics qua HTTP trên database riêng của application
+host.
+
 ## Cấu trúc
 
 ```text
@@ -203,12 +221,23 @@ samples/UnitOfWork.Sample.Console/
   SampleApplication.cs
   Program.cs
 
+samples/UnitOfWork.Sample.WebApi.Controllers/
+  Controllers/CountersController.cs
+  Infrastructure/SqliteSampleDatabase.cs
+  Repositories/DapperCounterRepository.cs
+  Services/CounterApplicationService.cs
+  Services/NestedCounterService.cs
+  Program.cs
+
 src/UnitOfWork.Core/
   IUnitOfWorkContext.cs
   IUnitOfWorkScope.cs
   RootUnitOfWork.cs
   UnitOfWorkManager.cs
   UnitOfWorkScope.cs
+
+tests/UnitOfWork.Sample.WebApi.Tests/
+  WebApiSampleTests.cs
 
 tests/UnitOfWork.Tests/
   ConsoleSampleTests.cs

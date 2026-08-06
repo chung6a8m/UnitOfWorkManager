@@ -128,6 +128,169 @@ public class ScopeLifecycleTests
     }
 
     [Fact]
+    public async Task Foreign_Dispose_During_Rejected_Settlement_Is_Rejected_After_State_Restores_To_Active()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var ownsRoot = new AsyncLocal<bool> { Value = true };
+        var holdRootLock = new AsyncLocal<bool>();
+        var rootLockHeld = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRootLock = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var root = new RootUnitOfWork(
+            connection,
+            (_, _) => throw new NotSupportedException(),
+            () =>
+            {
+                if (holdRootLock.Value)
+                {
+                    rootLockHeld.TrySetResult();
+                    releaseRootLock.Task.GetAwaiter().GetResult();
+                }
+
+                return ownsRoot.Value;
+            },
+            () => { });
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        var operationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var ownerSettlementStarted = new ManualResetEventSlim();
+        using var foreignDisposeStarted = new ManualResetEventSlim();
+        using var foreignDisposeFinished = new ManualResetEventSlim();
+        Exception? ownerSettlementException = null;
+        Exception? foreignDisposeException = null;
+        Exception? lifecycleLockHolderException = null;
+        var activeOperation = root.RunGuardedAsync(async () =>
+        {
+            operationStarted.TrySetResult();
+            await releaseOperation.Task;
+            return true;
+        });
+        Task? lifecycleLockHolder = null;
+        Thread? ownerSettlementThread = null;
+        Thread? foreignDisposeThread = null;
+        var ownerThreadJoined = true;
+        var foreignThreadJoined = true;
+
+        try
+        {
+            await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            lifecycleLockHolder = Task.Run(async () =>
+            {
+                ownsRoot.Value = true;
+                holdRootLock.Value = true;
+                lifecycleLockHolderException = await Record.ExceptionAsync(
+                    () => root.RunGuardedAsync(() => Task.FromResult(true)));
+            });
+            await rootLockHeld.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            ownerSettlementThread = new Thread(() =>
+            {
+                ownsRoot.Value = true;
+                ownerSettlementStarted.Set();
+
+                try
+                {
+                    scope.CompleteAsync().GetAwaiter().GetResult();
+                }
+                catch (Exception exception)
+                {
+                    ownerSettlementException = exception;
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "owner-scope-settlement"
+            };
+            ownerSettlementThread.Start();
+
+            Assert.True(ownerSettlementStarted.Wait(TimeSpan.FromSeconds(5)));
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => IsWaiting(ownerSettlementThread),
+                    TimeSpan.FromSeconds(5)),
+                "Owner settlement did not block at the root lifecycle gate.");
+
+            foreignDisposeThread = new Thread(() =>
+            {
+                ownsRoot.Value = false;
+                foreignDisposeStarted.Set();
+
+                try
+                {
+                    scope.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    foreignDisposeException = exception;
+                }
+                finally
+                {
+                    foreignDisposeFinished.Set();
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "foreign-scope-dispose"
+            };
+            foreignDisposeThread.Start();
+
+            Assert.True(foreignDisposeStarted.Wait(TimeSpan.FromSeconds(5)));
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => foreignDisposeFinished.IsSet || IsWaiting(foreignDisposeThread),
+                    TimeSpan.FromSeconds(5)),
+                "Foreign dispose neither returned nor waited for the settlement decision.");
+        }
+        finally
+        {
+            releaseRootLock.TrySetResult();
+
+            try
+            {
+                if (lifecycleLockHolder is not null)
+                    await lifecycleLockHolder.WaitAsync(TimeSpan.FromSeconds(5));
+
+                if (ownerSettlementThread is not null)
+                    ownerThreadJoined = ownerSettlementThread.Join(TimeSpan.FromSeconds(5));
+
+                if (foreignDisposeThread is not null)
+                    foreignThreadJoined = foreignDisposeThread.Join(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                releaseOperation.TrySetResult();
+                await activeOperation.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+
+        Assert.True(ownerThreadJoined, "Owner settlement thread did not exit.");
+        Assert.True(foreignThreadJoined, "Foreign dispose thread did not exit.");
+        Assert.IsType<UnitOfWorkConcurrencyException>(lifecycleLockHolderException);
+        Assert.IsType<UnitOfWorkConcurrencyException>(ownerSettlementException);
+        Assert.IsType<UnitOfWorkConcurrencyException>(foreignDisposeException);
+        Assert.Equal(1, root.ActiveScopeCount);
+        Assert.Equal(UnitOfWorkLifecycleState.Active, root.LifecycleState);
+        Assert.Equal(UnitOfWorkCompletionOutcome.None, root.CompletionOutcome);
+        Assert.False(root.RollbackRequested);
+        Assert.False(connection.IsDisposed);
+        Assert.Equal(0, connection.LastTransaction!.CommitCount);
+        Assert.Equal(0, connection.LastTransaction.RollbackCount);
+        Assert.Equal(0, connection.LastTransaction.DisposeCount);
+
+        await scope.CompleteAsync();
+
+        Assert.Equal(0, root.ActiveScopeCount);
+        Assert.Equal(UnitOfWorkCompletionOutcome.Committed, root.CompletionOutcome);
+        Assert.Equal(1, connection.LastTransaction.CommitCount);
+        Assert.Equal(0, connection.LastTransaction.RollbackCount);
+        Assert.Equal(1, connection.LastTransaction.DisposeCount);
+    }
+
+    [Fact]
     public async Task Concurrent_InitializeAsync_Uses_One_Open_And_Transaction()
     {
         var connection = new ControlledDbConnection();
@@ -264,4 +427,7 @@ public class ScopeLifecycleTests
             (_, _) => throw new NotSupportedException("No repository is needed by lifecycle tests."),
             () => true,
             onRootFinished ?? (() => { }));
+
+    private static bool IsWaiting(Thread thread) =>
+        (thread.ThreadState & ThreadState.WaitSleepJoin) != 0;
 }

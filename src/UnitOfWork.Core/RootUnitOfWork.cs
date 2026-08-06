@@ -137,7 +137,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         }
     }
 
-    internal bool TrySettleScope(UnitOfWorkScopeOutcome outcome, out Task settlement)
+    internal bool TrySettleScope(UnitOfWorkScopeOutcome outcome, out Func<Task> settle)
     {
         lock (_lifecycleLock)
         {
@@ -153,7 +153,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
 
                 if (Volatile.Read(ref _operationInProgress) != 0)
                 {
-                    settlement = Task.CompletedTask;
+                    settle = static () => Task.CompletedTask;
                     return false;
                 }
             }
@@ -164,14 +164,14 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
             var remainingScopes = Interlocked.Decrement(ref _activeScopeCount);
             if (remainingScopes != 0)
             {
-                settlement = Task.CompletedTask;
+                settle = static () => Task.CompletedTask;
                 return true;
             }
 
             Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Finalizing);
         }
 
-        settlement = FinalizeAsync();
+        settle = FinalizeAsync;
         return true;
     }
 

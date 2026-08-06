@@ -14,7 +14,8 @@ internal enum UnitOfWorkScopeState
 internal sealed class UnitOfWorkScope : IUnitOfWorkScope
 {
     private readonly RootUnitOfWork _root;
-    private int _state = (int)UnitOfWorkScopeState.Active;
+    private readonly object _settlementLock = new();
+    private UnitOfWorkScopeState _state = UnitOfWorkScopeState.Active;
 
     internal UnitOfWorkScope(RootUnitOfWork root)
     {
@@ -35,65 +36,75 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
 
     public void Dispose()
     {
-        if ((UnitOfWorkScopeState)Volatile.Read(ref _state) != UnitOfWorkScopeState.Active)
+        if (IsSettled())
             return;
 
         try
         {
             _root.EnsureUsable();
         }
-        catch (UnitOfWorkConcurrencyException) when (
-            (UnitOfWorkScopeState)Volatile.Read(ref _state) != UnitOfWorkScopeState.Active)
+        catch (UnitOfWorkConcurrencyException) when (IsSettled())
         {
             return;
         }
-        catch (UnitOfWorkStateException) when (
-            (UnitOfWorkScopeState)Volatile.Read(ref _state) != UnitOfWorkScopeState.Active)
+        catch (UnitOfWorkStateException) when (IsSettled())
         {
             return;
         }
 
-        if (Interlocked.CompareExchange(
-                ref _state,
-                (int)UnitOfWorkScopeState.Abandoned,
-                (int)UnitOfWorkScopeState.Active) == (int)UnitOfWorkScopeState.Active)
+        Func<Task> settle;
+        lock (_settlementLock)
         {
-            if (!_root.TrySettleScope(UnitOfWorkScopeOutcome.Abandoned, out var settlement))
+            if (_state != UnitOfWorkScopeState.Active)
+                return;
+
+            _state = UnitOfWorkScopeState.Abandoned;
+            if (!_root.TrySettleScope(UnitOfWorkScopeOutcome.Abandoned, out settle))
             {
-                Interlocked.CompareExchange(
-                    ref _state,
-                    (int)UnitOfWorkScopeState.Active,
-                    (int)UnitOfWorkScopeState.Abandoned);
+                _state = UnitOfWorkScopeState.Active;
                 throw FinalizationDuringOperationException();
             }
-
-            settlement.GetAwaiter().GetResult();
         }
+
+        settle().GetAwaiter().GetResult();
     }
 
     private async Task SettleAsync(UnitOfWorkScopeState settledState, UnitOfWorkScopeOutcome outcome)
     {
+        ThrowIfSettled();
         _root.EnsureUsable();
 
-        if (Interlocked.CompareExchange(
-                ref _state,
-                (int)settledState,
-                (int)UnitOfWorkScopeState.Active) != (int)UnitOfWorkScopeState.Active)
+        Func<Task> settle;
+        lock (_settlementLock)
         {
-            throw new UnitOfWorkStateException("A unit of work scope outcome has already been settled.");
+            if (_state != UnitOfWorkScopeState.Active)
+                throw AlreadySettledException();
+
+            _state = settledState;
+            if (!_root.TrySettleScope(outcome, out settle))
+            {
+                _state = UnitOfWorkScopeState.Active;
+                throw FinalizationDuringOperationException();
+            }
         }
 
-        if (!_root.TrySettleScope(outcome, out var settlement))
-        {
-            Interlocked.CompareExchange(
-                ref _state,
-                (int)UnitOfWorkScopeState.Active,
-                (int)settledState);
-            throw FinalizationDuringOperationException();
-        }
-
-        await settlement;
+        await settle();
     }
+
+    private bool IsSettled()
+    {
+        lock (_settlementLock)
+            return _state != UnitOfWorkScopeState.Active;
+    }
+
+    private void ThrowIfSettled()
+    {
+        if (IsSettled())
+            throw AlreadySettledException();
+    }
+
+    private static UnitOfWorkStateException AlreadySettledException() =>
+        new("A unit of work scope outcome has already been settled.");
 
     private static UnitOfWorkConcurrencyException FinalizationDuringOperationException() =>
         new("The root unit of work cannot be finalized while an operation is active.");

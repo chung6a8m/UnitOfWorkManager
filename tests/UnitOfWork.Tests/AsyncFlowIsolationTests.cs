@@ -150,6 +150,37 @@ public class AsyncFlowIsolationTests
         parentScope.Dispose();
     }
 
+    [Theory]
+    [InlineData(RetainedScopeSettlement.Complete, RetainedScopeSettlement.Complete)]
+    [InlineData(RetainedScopeSettlement.Complete, RetainedScopeSettlement.Rollback)]
+    [InlineData(RetainedScopeSettlement.Rollback, RetainedScopeSettlement.Complete)]
+    [InlineData(RetainedScopeSettlement.Rollback, RetainedScopeSettlement.Rollback)]
+    public async Task Already_Settled_Scope_Rejects_Repeated_Async_Settlement_After_Manager_Finalization(
+        RetainedScopeSettlement initialSettlement,
+        RetainedScopeSettlement repeatedSettlement)
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        var scope = await manager.BeginAsync();
+        var root = Assert.IsType<RootUnitOfWork>(manager.Current);
+
+        await SettleAsync(scope, initialSettlement);
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(
+            () => SettleAsync(scope, repeatedSettlement));
+        AssertOwnerSettlementFinalized(initialSettlement, manager, root, connection);
+
+        scope.Dispose();
+
+        Assert.Equal(1, connection.LastTransaction!.DisposeCount);
+        Assert.Equal(
+            initialSettlement == RetainedScopeSettlement.Complete ? 1 : 0,
+            connection.LastTransaction.CommitCount);
+        Assert.Equal(
+            initialSettlement == RetainedScopeSettlement.Rollback ? 1 : 0,
+            connection.LastTransaction.RollbackCount);
+    }
+
     private static Task SettleAsync(
         IUnitOfWorkScope scope,
         RetainedScopeSettlement settlement) => settlement switch

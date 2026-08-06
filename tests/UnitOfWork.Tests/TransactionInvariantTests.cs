@@ -69,6 +69,97 @@ public class TransactionInvariantTests
     }
 
     [Fact]
+    public async Task Connection_Facade_Rejects_OpenAsync()
+    {
+        using var db = new SqliteTestDb();
+        var root = CreateRoot(db.CreateConnection());
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        DbConnection connection = scope.Connection;
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(async () => await connection.OpenAsync());
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Connection_Facade_Rejects_CloseAsync()
+    {
+        using var db = new SqliteTestDb();
+        var root = CreateRoot(db.CreateConnection());
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        DbConnection connection = scope.Connection;
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(async () => await connection.CloseAsync());
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Connection_Facade_Rejects_BeginTransactionAsync()
+    {
+        using var db = new SqliteTestDb();
+        var root = CreateRoot(db.CreateConnection());
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        DbConnection connection = scope.Connection;
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(async () => await connection.BeginTransactionAsync());
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Connection_Facade_Rejects_Isolated_BeginTransactionAsync()
+    {
+        using var db = new SqliteTestDb();
+        var root = CreateRoot(db.CreateConnection());
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        DbConnection connection = scope.Connection;
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(async () => await connection.BeginTransactionAsync(
+            IsolationLevel.Serializable));
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Connection_Facade_Rejects_DisposeAsync()
+    {
+        using var db = new SqliteTestDb();
+        var root = CreateRoot(db.CreateConnection());
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        DbConnection connection = scope.Connection;
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(async () => await connection.DisposeAsync());
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Connection_Facade_Rejects_Batch_Creation()
+    {
+        using var db = new SqliteTestDb();
+        var root = CreateRoot(db.CreateConnection());
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        DbConnection connection = scope.Connection;
+
+        Assert.Throws<NotSupportedException>(() => connection.CreateBatch());
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
     public async Task Command_Rejects_Foreign_Connection_And_Transaction()
     {
         using var db = new SqliteTestDb();

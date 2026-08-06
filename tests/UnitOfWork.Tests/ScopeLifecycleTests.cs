@@ -138,6 +138,78 @@ public class ScopeLifecycleTests
         Assert.Equal(0, root.ActiveScopeCount);
     }
 
+    [Fact]
+    public async Task Commit_Failure_Faults_Root_And_Is_Not_Retried()
+    {
+        var commitFailure = new InvalidOperationException("commit failed");
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            commitException: commitFailure);
+        var root = CreateRoot(connection);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => scope.CompleteAsync());
+
+        Assert.Same(commitFailure, actual);
+        Assert.Equal(1, connection.LastTransaction!.CommitCount);
+        Assert.Equal(UnitOfWorkLifecycleState.Faulted, root.LifecycleState);
+        Assert.Equal(UnitOfWorkCompletionOutcome.Faulted, root.CompletionOutcome);
+        Assert.Equal(0, root.ActiveScopeCount);
+        Assert.True(connection.IsDisposed);
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(() => scope.CompleteAsync());
+        Assert.Equal(1, connection.LastTransaction.CommitCount);
+    }
+
+    [Fact]
+    public async Task Rollback_Failure_Faults_Root_And_Is_Not_Retried()
+    {
+        var rollbackFailure = new InvalidOperationException("rollback failed");
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            rollbackException: rollbackFailure);
+        var root = CreateRoot(connection);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => scope.RollbackAsync());
+
+        Assert.Same(rollbackFailure, actual);
+        Assert.Equal(1, connection.LastTransaction!.RollbackCount);
+        Assert.Equal(UnitOfWorkLifecycleState.Faulted, root.LifecycleState);
+        Assert.Equal(UnitOfWorkCompletionOutcome.Faulted, root.CompletionOutcome);
+        Assert.Equal(0, root.ActiveScopeCount);
+        Assert.True(connection.IsDisposed);
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(() => scope.RollbackAsync());
+        Assert.Equal(1, connection.LastTransaction.RollbackCount);
+    }
+
+    [Fact]
+    public async Task Cleanup_Attempts_Connection_When_Transaction_Disposal_Fails()
+    {
+        var transactionDisposeFailure = new InvalidOperationException("transaction dispose failed");
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            transactionDisposeException: transactionDisposeFailure);
+        var finishedCount = 0;
+        var root = CreateRoot(connection, () => finishedCount++);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => scope.CompleteAsync());
+
+        Assert.Same(transactionDisposeFailure, actual);
+        Assert.Equal(1, connection.LastTransaction!.DisposeCount);
+        Assert.True(connection.IsDisposed);
+        Assert.Equal(1, finishedCount);
+        Assert.Equal(0, root.ActiveScopeCount);
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(() => scope.CompleteAsync());
+        Assert.Equal(1, connection.LastTransaction.DisposeCount);
+    }
+
     private static RootUnitOfWork CreateRoot(
         IDbConnection connection,
         Action? onRootFinished = null) =>

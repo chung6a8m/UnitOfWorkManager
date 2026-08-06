@@ -40,11 +40,20 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
                 (int)UnitOfWorkScopeState.Abandoned,
                 (int)UnitOfWorkScopeState.Active) == (int)UnitOfWorkScopeState.Active)
         {
-            _root.SettleScopeAsync(UnitOfWorkScopeOutcome.Abandoned).GetAwaiter().GetResult();
+            if (!_root.TrySettleScope(UnitOfWorkScopeOutcome.Abandoned, out var settlement))
+            {
+                Interlocked.CompareExchange(
+                    ref _state,
+                    (int)UnitOfWorkScopeState.Active,
+                    (int)UnitOfWorkScopeState.Abandoned);
+                throw FinalizationDuringOperationException();
+            }
+
+            settlement.GetAwaiter().GetResult();
         }
     }
 
-    private Task SettleAsync(UnitOfWorkScopeState settledState, UnitOfWorkScopeOutcome outcome)
+    private async Task SettleAsync(UnitOfWorkScopeState settledState, UnitOfWorkScopeOutcome outcome)
     {
         if (Interlocked.CompareExchange(
                 ref _state,
@@ -54,6 +63,18 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
             throw new UnitOfWorkStateException("A unit of work scope outcome has already been settled.");
         }
 
-        return _root.SettleScopeAsync(outcome);
+        if (!_root.TrySettleScope(outcome, out var settlement))
+        {
+            Interlocked.CompareExchange(
+                ref _state,
+                (int)UnitOfWorkScopeState.Active,
+                (int)settledState);
+            throw FinalizationDuringOperationException();
+        }
+
+        await settlement;
     }
+
+    private static UnitOfWorkConcurrencyException FinalizationDuringOperationException() =>
+        new("The root unit of work cannot be finalized while an operation is active.");
 }

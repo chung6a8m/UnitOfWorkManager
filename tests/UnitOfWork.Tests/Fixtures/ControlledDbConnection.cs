@@ -30,24 +30,31 @@ internal sealed class ControlledDbConnection : DbConnection
     private readonly Exception? _beginTransactionException;
     private readonly Exception? _disposeException;
     private readonly Exception? _transactionDisposeException;
+    private readonly Exception? _commitException;
+    private readonly Exception? _rollbackException;
     private ConnectionState _state;
 
     public ControlledDbConnection(
         bool initiallyOpen = false,
         Exception? beginTransactionException = null,
         Exception? disposeException = null,
-        Exception? transactionDisposeException = null)
+        Exception? transactionDisposeException = null,
+        Exception? commitException = null,
+        Exception? rollbackException = null)
     {
         _state = initiallyOpen ? ConnectionState.Open : ConnectionState.Closed;
         _beginTransactionException = beginTransactionException;
         _disposeException = disposeException;
         _transactionDisposeException = transactionDisposeException;
+        _commitException = commitException;
+        _rollbackException = rollbackException;
 
         if (initiallyOpen)
             _openGate.TrySetResult();
     }
 
     public bool IsDisposed { get; private set; }
+    public ControlledDbTransaction? LastTransaction { get; private set; }
     public Action? Opening { get; set; }
 
     public void ReleaseOpen() => _openGate.TrySetResult();
@@ -77,10 +84,13 @@ internal sealed class ControlledDbConnection : DbConnection
         if (_beginTransactionException is not null)
             throw _beginTransactionException;
 
-        return new ControlledDbTransaction(
+        LastTransaction = new ControlledDbTransaction(
             this,
             isolationLevel,
-            _transactionDisposeException);
+            _transactionDisposeException,
+            _commitException,
+            _rollbackException);
+        return LastTransaction;
     }
 
     protected override DbCommand CreateDbCommand() =>
@@ -102,25 +112,49 @@ internal sealed class ControlledDbTransaction : DbTransaction
     private readonly DbConnection _connection;
     private readonly IsolationLevel _isolationLevel;
     private readonly Exception? _disposeException;
+    private readonly Exception? _commitException;
+    private readonly Exception? _rollbackException;
 
     public ControlledDbTransaction(
         DbConnection connection,
         IsolationLevel isolationLevel,
-        Exception? disposeException)
+        Exception? disposeException,
+        Exception? commitException,
+        Exception? rollbackException)
     {
         _connection = connection;
         _isolationLevel = isolationLevel;
         _disposeException = disposeException;
+        _commitException = commitException;
+        _rollbackException = rollbackException;
     }
+
+    public int CommitCount { get; private set; }
+    public int RollbackCount { get; private set; }
+    public int DisposeCount { get; private set; }
 
     public override IsolationLevel IsolationLevel => _isolationLevel;
     protected override DbConnection DbConnection => _connection;
 
-    public override void Commit() { }
-    public override void Rollback() { }
+    public override void Commit()
+    {
+        CommitCount++;
+        if (_commitException is not null)
+            throw _commitException;
+    }
+
+    public override void Rollback()
+    {
+        RollbackCount++;
+        if (_rollbackException is not null)
+            throw _rollbackException;
+    }
 
     protected override void Dispose(bool disposing)
     {
+        if (disposing)
+            DisposeCount++;
+
         base.Dispose(disposing);
 
         if (disposing && _disposeException is not null)

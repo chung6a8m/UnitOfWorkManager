@@ -8,6 +8,79 @@ namespace UnitOfWork.Tests;
 
 public class ConcurrencyGuardTests : Fixtures.UnitOfWorkTestBase
 {
+    [Fact]
+    public async Task Lifecycle_Finalization_While_Operation_Is_Active_Is_Rejected_Without_Settling_Scope()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var root = new RootUnitOfWork(
+            connection,
+            (_, _) => throw new NotSupportedException(),
+            () => true,
+            () => { });
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var activeOperation = root.RunGuardedAsync(async () =>
+        {
+            operationStarted.TrySetResult();
+            await releaseOperation.Task;
+            return true;
+        });
+        await operationStarted.Task;
+
+        await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(() => scope.CompleteAsync());
+
+        Assert.Equal(1, root.ActiveScopeCount);
+        Assert.Equal(UnitOfWorkLifecycleState.Active, root.LifecycleState);
+        Assert.Equal(UnitOfWorkCompletionOutcome.None, root.CompletionOutcome);
+        Assert.False(connection.IsDisposed);
+        Assert.Equal(0, connection.LastTransaction!.CommitCount);
+
+        releaseOperation.TrySetResult();
+        await activeOperation;
+        await scope.CompleteAsync();
+
+        Assert.Equal(0, root.ActiveScopeCount);
+        Assert.Equal(1, connection.LastTransaction.CommitCount);
+    }
+
+    [Fact]
+    public async Task Dispose_While_Operation_Is_Active_Is_Rejected_Without_Abandoning_Scope()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var root = new RootUnitOfWork(
+            connection,
+            (_, _) => throw new NotSupportedException(),
+            () => true,
+            () => { });
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var activeOperation = root.RunGuardedAsync(async () =>
+        {
+            operationStarted.TrySetResult();
+            await releaseOperation.Task;
+            return true;
+        });
+        await operationStarted.Task;
+
+        Assert.Throws<UnitOfWorkConcurrencyException>(scope.Dispose);
+
+        Assert.Equal(1, root.ActiveScopeCount);
+        Assert.Equal(UnitOfWorkLifecycleState.Active, root.LifecycleState);
+        Assert.False(root.RollbackRequested);
+
+        releaseOperation.TrySetResult();
+        await activeOperation;
+        scope.Dispose();
+
+        Assert.Equal(0, root.ActiveScopeCount);
+        Assert.Equal(UnitOfWorkCompletionOutcome.RolledBack, root.CompletionOutcome);
+        Assert.Equal(1, connection.LastTransaction!.RollbackCount);
+    }
+
     private static CoreUoW NewOwnedUnitOfWork(SqliteTestDb db)
     {
         // Tạo trực tiếp (không qua Manager) để nắm chắc AmbientFlowId đang trỏ đúng instance

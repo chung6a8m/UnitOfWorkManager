@@ -54,4 +54,31 @@ public class DisposalTests : Fixtures.UnitOfWorkTestBase
 
         await second.RollbackAsync();
     }
+
+    [Fact]
+    public async Task Commit_Failure_Clears_Manager_Current_And_Next_Begin_Is_Fresh()
+    {
+        var commitFailure = new InvalidOperationException("commit failed");
+        var failedConnection = new ControlledDbConnection(
+            initiallyOpen: true,
+            commitException: commitFailure);
+        var freshConnection = new ControlledDbConnection(initiallyOpen: true);
+        var factory = new ControlledConnectionFactory(failedConnection, freshConnection);
+        var manager = new UnitOfWorkManager(
+            factory,
+            (_, _) => throw new NotSupportedException());
+        var first = await manager.BeginAsync();
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => first.CompleteAsync());
+
+        Assert.Same(commitFailure, actual);
+        Assert.False(manager.HasCurrent);
+        Assert.Throws<InvalidOperationException>(() => manager.Current);
+
+        using var second = await manager.BeginAsync();
+
+        Assert.Equal(2, factory.CreateCount);
+        Assert.Same(freshConnection, ((RootUnitOfWork)manager.Current).Transaction!.Connection);
+        await second.RollbackAsync();
+    }
 }

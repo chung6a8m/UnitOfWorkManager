@@ -137,37 +137,55 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         }
     }
 
-    internal Task SettleScopeAsync(UnitOfWorkScopeOutcome outcome)
+    internal bool TrySettleScope(UnitOfWorkScopeOutcome outcome, out Task settlement)
     {
         lock (_lifecycleLock)
         {
+            var activeScopeCount = Volatile.Read(ref _activeScopeCount);
+            if (activeScopeCount <= 0)
+                throw new UnitOfWorkStateException("A unit of work scope was settled more than once.");
+
+            var finalizesRoot = activeScopeCount == 1;
+            if (finalizesRoot)
+            {
+                if (LifecycleState != UnitOfWorkLifecycleState.Active)
+                    throw new UnitOfWorkStateException("The unit of work root cannot be finalized in its current state.");
+
+                if (Volatile.Read(ref _operationInProgress) != 0)
+                {
+                    settlement = Task.CompletedTask;
+                    return false;
+                }
+            }
+
             if (outcome is UnitOfWorkScopeOutcome.RollbackRequested or UnitOfWorkScopeOutcome.Abandoned)
                 Volatile.Write(ref _rollbackRequested, 1);
 
             var remainingScopes = Interlocked.Decrement(ref _activeScopeCount);
-            if (remainingScopes < 0)
-                throw new UnitOfWorkStateException("A unit of work scope was settled more than once.");
-
             if (remainingScopes != 0)
-                return Task.CompletedTask;
-
-            if (LifecycleState != UnitOfWorkLifecycleState.Active)
-                throw new UnitOfWorkStateException("The unit of work root cannot be finalized in its current state.");
+            {
+                settlement = Task.CompletedTask;
+                return true;
+            }
 
             Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Finalizing);
         }
 
-        return FinalizeAsync();
+        settlement = FinalizeAsync();
+        return true;
     }
 
     internal async Task<T> RunGuardedAsync<T>(Func<Task<T>> operation)
     {
-        EnsureUsable();
-
-        if (Interlocked.CompareExchange(ref _operationInProgress, 1, 0) != 0)
+        lock (_lifecycleLock)
         {
-            throw new UnitOfWorkConcurrencyException(
-                "The root unit of work is already executing another operation.");
+            EnsureUsable();
+
+            if (Interlocked.CompareExchange(ref _operationInProgress, 1, 0) != 0)
+            {
+                throw new UnitOfWorkConcurrencyException(
+                    "The root unit of work is already executing another operation.");
+            }
         }
 
         try

@@ -7,13 +7,17 @@ namespace UnitOfWork.Core;
 
 internal sealed class RootUnitOfWork
 {
+    private const string CleanupExceptionDataKey = "UnitOfWorkCleanupException";
+
     private readonly IDbConnection _connection;
     private readonly Func<Type, IDbConnection, IDbTransaction?, object> _repositoryFactory;
     private readonly Dictionary<Type, object> _repositories = new();
     private readonly Func<bool> _isCurrentRoot;
     private readonly Action _onRootFinished;
+    private readonly object _lifecycleLock = new();
 
     private IDbTransaction? _transaction;
+    private Task? _initializationTask;
     private int _activeScopeCount;
     private int _rollbackRequested;
     private int _lifecycleState = (int)UnitOfWorkLifecycleState.Initializing;
@@ -43,24 +47,39 @@ internal sealed class RootUnitOfWork
 
     internal UnitOfWorkScope AcquireScope()
     {
-        var state = LifecycleState;
-        if (state is not UnitOfWorkLifecycleState.Initializing and not UnitOfWorkLifecycleState.Active)
-            throw new UnitOfWorkStateException("The unit of work root is no longer accepting scopes.");
+        lock (_lifecycleLock)
+        {
+            var state = LifecycleState;
+            if (state is not UnitOfWorkLifecycleState.Initializing and not UnitOfWorkLifecycleState.Active)
+                throw new UnitOfWorkStateException("The unit of work root is no longer accepting scopes.");
 
-        Interlocked.Increment(ref _activeScopeCount);
-        return new UnitOfWorkScope(this);
+            Interlocked.Increment(ref _activeScopeCount);
+            return new UnitOfWorkScope(this);
+        }
     }
 
-    internal async Task InitializeAsync()
+    internal Task InitializeAsync()
     {
-        if (Interlocked.CompareExchange(
-                ref _lifecycleState,
-                (int)UnitOfWorkLifecycleState.Initializing,
-                (int)UnitOfWorkLifecycleState.Initializing) != (int)UnitOfWorkLifecycleState.Initializing)
+        TaskCompletionSource? completion = null;
+
+        lock (_lifecycleLock)
         {
-            throw new UnitOfWorkStateException("The unit of work root has already been initialized.");
+            if (_initializationTask is not null)
+                return _initializationTask;
+
+            if (LifecycleState != UnitOfWorkLifecycleState.Initializing)
+                throw new UnitOfWorkStateException("The unit of work root has already been initialized.");
+
+            completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _initializationTask = completion.Task;
         }
 
+        _ = InitializeCoreAsync(completion);
+        return completion.Task;
+    }
+
+    private async Task InitializeCoreAsync(TaskCompletionSource completion)
+    {
         try
         {
             if (_connection.State != ConnectionState.Open)
@@ -73,28 +92,56 @@ internal sealed class RootUnitOfWork
 
             _transaction = _connection.BeginTransaction();
             Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Active);
+            completion.TrySetResult();
         }
-        catch
+        catch (Exception initializationError)
         {
             Volatile.Write(ref _completionOutcome, (int)UnitOfWorkCompletionOutcome.Faulted);
             Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Faulted);
-            DisposeResources();
-            _onRootFinished();
-            throw;
+
+            try
+            {
+                DisposeResources();
+            }
+            catch (Exception cleanupError)
+            {
+                AddCleanupException(initializationError, cleanupError);
+            }
+            finally
+            {
+                try
+                {
+                    _onRootFinished();
+                }
+                catch (Exception cleanupError)
+                {
+                    AddCleanupException(initializationError, cleanupError);
+                }
+            }
+
+            completion.TrySetException(initializationError);
         }
     }
 
     internal Task SettleScopeAsync(UnitOfWorkScopeOutcome outcome)
     {
-        if (outcome is UnitOfWorkScopeOutcome.RollbackRequested or UnitOfWorkScopeOutcome.Abandoned)
-            Volatile.Write(ref _rollbackRequested, 1);
+        lock (_lifecycleLock)
+        {
+            if (outcome is UnitOfWorkScopeOutcome.RollbackRequested or UnitOfWorkScopeOutcome.Abandoned)
+                Volatile.Write(ref _rollbackRequested, 1);
 
-        var remainingScopes = Interlocked.Decrement(ref _activeScopeCount);
-        if (remainingScopes < 0)
-            throw new UnitOfWorkStateException("A unit of work scope was settled more than once.");
+            var remainingScopes = Interlocked.Decrement(ref _activeScopeCount);
+            if (remainingScopes < 0)
+                throw new UnitOfWorkStateException("A unit of work scope was settled more than once.");
 
-        if (remainingScopes != 0)
-            return Task.CompletedTask;
+            if (remainingScopes != 0)
+                return Task.CompletedTask;
+
+            if (LifecycleState != UnitOfWorkLifecycleState.Active)
+                throw new UnitOfWorkStateException("The unit of work root cannot be finalized in its current state.");
+
+            Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Finalizing);
+        }
 
         return FinalizeAsync();
     }
@@ -144,14 +191,6 @@ internal sealed class RootUnitOfWork
 
     private Task FinalizeAsync()
     {
-        if (Interlocked.CompareExchange(
-                ref _lifecycleState,
-                (int)UnitOfWorkLifecycleState.Finalizing,
-                (int)UnitOfWorkLifecycleState.Active) != (int)UnitOfWorkLifecycleState.Active)
-        {
-            throw new UnitOfWorkStateException("The unit of work root cannot be finalized in its current state.");
-        }
-
         try
         {
             var outcome = RollbackRequested
@@ -179,6 +218,19 @@ internal sealed class RootUnitOfWork
         }
 
         return Task.CompletedTask;
+    }
+
+    private static void AddCleanupException(Exception primaryException, Exception cleanupException)
+    {
+        if (primaryException.Data[CleanupExceptionDataKey] is Exception existingCleanupException)
+        {
+            primaryException.Data[CleanupExceptionDataKey] = new AggregateException(
+                existingCleanupException,
+                cleanupException);
+            return;
+        }
+
+        primaryException.Data[CleanupExceptionDataKey] = cleanupException;
     }
 
     private void DisposeResources()

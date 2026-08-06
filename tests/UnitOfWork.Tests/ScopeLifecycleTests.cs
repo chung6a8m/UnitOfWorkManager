@@ -81,6 +81,63 @@ public class ScopeLifecycleTests
         Assert.True(connection.IsDisposed);
     }
 
+    [Fact]
+    public async Task Concurrent_InitializeAsync_Uses_One_Open_And_Transaction()
+    {
+        var connection = new ControlledDbConnection();
+        var openingStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var openCount = 0;
+        connection.Opening = () =>
+        {
+            Interlocked.Increment(ref openCount);
+            openingStarted.TrySetResult();
+        };
+        var root = CreateRoot(connection);
+
+        var firstInitialization = root.InitializeAsync();
+        await openingStarted.Task;
+        var secondInitialization = root.InitializeAsync();
+
+        await Task.Yield();
+        Assert.Equal(1, Volatile.Read(ref openCount));
+
+        connection.ReleaseOpen();
+        await Task.WhenAll(firstInitialization, secondInitialization);
+    }
+
+    [Fact]
+    public async Task Initialization_Failure_Runs_Finish_Callback_When_Cleanup_Throws()
+    {
+        var initializationFailure = new InvalidOperationException("begin failed");
+        var cleanupFailure = new InvalidOperationException("dispose failed");
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            beginTransactionException: initializationFailure,
+            disposeException: cleanupFailure);
+        var finishedCount = 0;
+        var root = CreateRoot(connection, () => finishedCount++);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => root.InitializeAsync());
+
+        Assert.Same(initializationFailure, exception);
+        Assert.Same(cleanupFailure, exception.Data["UnitOfWorkCleanupException"]);
+        Assert.Equal(1, finishedCount);
+    }
+
+    [Fact]
+    public async Task AcquireScope_Is_Rejected_After_Finalization_Has_Completed()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var root = CreateRoot(connection);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        await scope.CompleteAsync();
+
+        Assert.Throws<UnitOfWorkStateException>(() => root.AcquireScope());
+        Assert.Equal(0, root.ActiveScopeCount);
+    }
+
     private static RootUnitOfWork CreateRoot(
         IDbConnection connection,
         Action? onRootFinished = null) =>

@@ -1,0 +1,52 @@
+services:
+  uow-sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: uow-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "UowTest!2026"
+    ports:
+      - "${UOW_SQLSERVER_PORT:-14333}:1433"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa
+          -P "$${MSSQL_SA_PASSWORD}" -C -Q "SELECT 1" >/dev/null
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  uow-postgresql:
+    image: postgres:16-alpine
+    container_name: uow-postgresql
+    environment:
+      POSTGRES_DB: uow_tests
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "UowTest!2026"
+    ports:
+      - "${UOW_POSTGRESQL_PORT:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d uow_tests"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  uow-mysql:
+    image: mysql:8.4
+    container_name: uow-mysql
+    environment:
+      MYSQL_DATABASE: uow_tests
+      MYSQL_ROOT_PASSWORD: "UowTest!2026"
+    ports:
+      - "${UOW_MYSQL_PORT:-13306}:3306"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h localhost -uroot -p"$${MYSQL_ROOT_PASSWORD}" --silent
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s

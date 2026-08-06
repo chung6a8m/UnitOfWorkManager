@@ -1,4 +1,5 @@
 using System.Data;
+using System.Data.Common;
 using System.Reflection;
 using UnitOfWork.Core;
 using UnitOfWork.Core.Exceptions;
@@ -140,7 +141,7 @@ public class TransactionInvariantTests
         await scope.RollbackAsync();
     }
 
-    private static RootUnitOfWork CreateRoot(IDbConnection connection) =>
+    private static RootUnitOfWork CreateRoot(DbConnection connection) =>
         new(
             connection,
             (type, boundConnection) => type == typeof(TransactionCapturingCounterRepository)
@@ -151,11 +152,11 @@ public class TransactionInvariantTests
 
     private sealed class TransactionCapturingCounterRepository
     {
-        private readonly IDbConnection _connection;
+        private readonly DbConnection _connection;
 
-        public TransactionCapturingCounterRepository(IDbConnection connection) => _connection = connection;
+        public TransactionCapturingCounterRepository(DbConnection connection) => _connection = connection;
 
-        public IDbTransaction? CommandTransaction { get; private set; }
+        public DbTransaction? CommandTransaction { get; private set; }
 
         public void Insert(int value)
         {
@@ -170,14 +171,13 @@ public class TransactionInvariantTests
         }
     }
 
-    private sealed class ForeignTransaction : IDbTransaction
+    private sealed class ForeignTransaction : DbTransaction
     {
-        public IDbConnection? Connection => null;
-        public IsolationLevel IsolationLevel => IsolationLevel.ReadCommitted;
+        public override IsolationLevel IsolationLevel => IsolationLevel.ReadCommitted;
+        protected override DbConnection? DbConnection => null;
 
-        public void Commit() { }
-        public void Rollback() { }
-        public void Dispose() { }
+        public override void Commit() { }
+        public override void Rollback() { }
     }
 
     private static void AssertDoesNotRetainRawResource(object facade, object rawResource)

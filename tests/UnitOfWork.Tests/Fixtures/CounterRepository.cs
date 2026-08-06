@@ -1,4 +1,4 @@
-using System.Data;
+using System.Data.Common;
 
 namespace UnitOfWork.Tests.Fixtures;
 
@@ -8,14 +8,14 @@ public interface ICounterRepository
 }
 
 /// <summary>
-/// Repository chỉ nhận IDbConnection do UnitOfWork cung cấp; nó không tự quản lý
+/// Repository chỉ nhận DbConnection do UnitOfWork cung cấp; nó không tự quản lý
 /// transaction của command.
 /// </summary>
 public class CounterRepository : ICounterRepository
 {
-    private readonly IDbConnection _connection;
+    private readonly DbConnection _connection;
 
-    public CounterRepository(IDbConnection connection)
+    public CounterRepository(DbConnection connection)
     {
         _connection = connection;
     }

@@ -140,7 +140,7 @@ public sealed class UnitOfWorkManagerAmbientTests
             disposeException: cleanupError);
         var manager = CreateManager(new ControlledConnectionFactory(connection));
 
-        var actual = await Assert.ThrowsAsync<InvalidOperationException>(manager.BeginAsync);
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => manager.BeginAsync());
 
         Assert.Same(initializationError, actual);
         Assert.Same(cleanupError, actual.Data["UnitOfWorkCleanupException"]);

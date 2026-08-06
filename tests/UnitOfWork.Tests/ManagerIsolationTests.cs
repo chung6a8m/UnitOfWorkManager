@@ -139,7 +139,7 @@ public sealed class ManagerIsolationTests
         var factory = new ControlledConnectionFactory(failingConnection, succeedingConnection);
         var manager = CreateManager(factory);
 
-        var actual = await Assert.ThrowsAsync<InvalidOperationException>(manager.BeginAsync);
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => manager.BeginAsync());
 
         Assert.Same(initializationFailure, actual);
         Assert.True(failingConnection.IsDisposed);

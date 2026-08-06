@@ -1,4 +1,4 @@
-using System.Data;
+using System.Data.Common;
 using UnitOfWork.Core.Exceptions;
 
 namespace UnitOfWork.Core;
@@ -22,7 +22,7 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
         _root = root;
     }
 
-    public IDbConnection Connection => _root.Connection;
+    public DbConnection Connection => _root.Connection;
 
     public T GetRepository<T>() where T : class => _root.GetRepository<T>();
 
@@ -67,6 +67,12 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
         }
 
         settle().GetAwaiter().GetResult();
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        Dispose();
+        return ValueTask.CompletedTask;
     }
 
     private async Task SettleAsync(UnitOfWorkScopeState settledState, UnitOfWorkScopeOutcome outcome)

@@ -1,10 +1,10 @@
-using System.Data;
+using System.Data.Common;
 
 namespace UnitOfWork.Core;
 
 public interface IUnitOfWorkContext
 {
-    IDbConnection Connection { get; }
+    DbConnection Connection { get; }
 
     T GetRepository<T>() where T : class;
 }

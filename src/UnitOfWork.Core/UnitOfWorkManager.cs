@@ -1,9 +1,12 @@
-using System.Data;
+using System.Data.Common;
+using UnitOfWork.Core.Exceptions;
 
 namespace UnitOfWork.Core;
 
 public class UnitOfWorkManager : IUnitOfWorkManager
 {
+    private static readonly UnitOfWorkOptions DefaultOptions = new();
+
     private sealed class AmbientUnitOfWorkHolder
     {
         public RootUnitOfWork? Root;
@@ -12,14 +15,17 @@ public class UnitOfWorkManager : IUnitOfWorkManager
 
     private readonly AsyncLocal<AmbientUnitOfWorkHolder?> _current = new();
     private readonly IDbConnectionFactory _connectionFactory;
-    private readonly Func<Type, IDbConnection, object> _repositoryFactory;
+    private readonly Func<Type, DbConnection, object> _repositoryFactory;
+    private readonly IUnitOfWorkTransactionFactory _transactionFactory;
 
     public UnitOfWorkManager(
         IDbConnectionFactory connectionFactory,
-        Func<Type, IDbConnection, object> repositoryFactory)
+        Func<Type, DbConnection, object> repositoryFactory,
+        IUnitOfWorkTransactionFactory? transactionFactory = null)
     {
         _connectionFactory = connectionFactory;
         _repositoryFactory = repositoryFactory;
+        _transactionFactory = transactionFactory ?? new DefaultUnitOfWorkTransactionFactory();
     }
 
     public bool HasCurrent => _current.Value?.Root is not null;
@@ -27,18 +33,34 @@ public class UnitOfWorkManager : IUnitOfWorkManager
     public IUnitOfWorkContext Current => _current.Value?.Root
         ?? throw new InvalidOperationException("No unit of work has been started.");
 
-    public Task<IUnitOfWorkScope> BeginAsync()
+    public Task<IUnitOfWorkScope> BeginAsync(UnitOfWorkOptions? options = null)
     {
+        UnitOfWorkOptions normalizedOptions;
+        try
+        {
+            normalizedOptions = (options ?? DefaultOptions).Validate();
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            return Task.FromException<IUnitOfWorkScope>(exception);
+        }
+
         var currentHolder = _current.Value;
         if (currentHolder?.Root is { } currentRoot)
         {
+            if (currentRoot.Options != normalizedOptions)
+            {
+                return Task.FromException<IUnitOfWorkScope>(new UnitOfWorkStateException(
+                    "Nested unit of work options must match the active root options."));
+            }
+
             var initialization = currentHolder.Initialization
                 ?? throw new InvalidOperationException("The ambient unit of work has no initialization task.");
             return AwaitScopeAsync(currentRoot.AcquireScope(), initialization);
         }
 
         var holder = new AmbientUnitOfWorkHolder();
-        var root = CreateRoot(holder);
+        var root = CreateRoot(holder, normalizedOptions);
         var completion = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         holder.Root = root;
@@ -50,14 +72,18 @@ public class UnitOfWorkManager : IUnitOfWorkManager
         return AwaitScopeAsync(scope, completion.Task);
     }
 
-    private RootUnitOfWork CreateRoot(AmbientUnitOfWorkHolder holder)
+    private RootUnitOfWork CreateRoot(
+        AmbientUnitOfWorkHolder holder,
+        UnitOfWorkOptions options)
     {
         RootUnitOfWork root = null!;
         root = new RootUnitOfWork(
             _connectionFactory.CreateConnection(),
             _repositoryFactory,
             () => ReferenceEquals(_current.Value?.Root, root),
-            () => ClearRoot(holder, root));
+            () => ClearRoot(holder, root),
+            options,
+            _transactionFactory);
         return root;
     }
 

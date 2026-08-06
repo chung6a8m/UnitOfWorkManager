@@ -1,4 +1,5 @@
 using System.Data;
+using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using UnitOfWork.Core;
 
@@ -38,7 +39,7 @@ public sealed class SqliteTestDb : IDbConnectionFactory, IDisposable
     // khoá file đó.
     private string BuildConnectionString() => $"Data Source={_dbPath};Pooling=False;";
 
-    public IDbConnection CreateConnection()
+    public DbConnection CreateConnection()
     {
         var conn = new SqliteConnection(BuildConnectionString());
         conn.Open();

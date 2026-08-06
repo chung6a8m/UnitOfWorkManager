@@ -16,7 +16,7 @@ internal sealed class ControlledConnectionFactory : IDbConnectionFactory
 
     public int CreateCount { get; private set; }
 
-    public IDbConnection CreateConnection()
+    public DbConnection CreateConnection()
     {
         CreateCount++;
         return _connections.Dequeue();

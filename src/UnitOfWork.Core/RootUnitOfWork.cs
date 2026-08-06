@@ -9,15 +9,18 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
 {
     private const string CleanupExceptionDataKey = "UnitOfWorkCleanupException";
 
-    private readonly IDbConnection _connection;
-    private readonly Func<Type, IDbConnection, object> _repositoryFactory;
+    private static readonly UnitOfWorkOptions DefaultOptions = new();
+
+    private readonly DbConnection _connection;
+    private readonly Func<Type, DbConnection, object> _repositoryFactory;
+    private readonly IUnitOfWorkTransactionFactory _transactionFactory;
     private readonly Dictionary<Type, object> _repositories = new();
     private readonly Func<bool> _isCurrentRoot;
     private readonly Action _onRootFinished;
     private readonly object _lifecycleLock = new();
 
-    private IDbTransaction? _transaction;
-    private IDbConnection? _boundConnection;
+    private DbTransaction? _transaction;
+    private DbConnection? _boundConnection;
     private Task? _initializationTask;
     private int _activeScopeCount;
     private int _rollbackRequested;
@@ -26,15 +29,19 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
     private int _operationInProgress;
 
     internal RootUnitOfWork(
-        IDbConnection connection,
-        Func<Type, IDbConnection, object> repositoryFactory,
+        DbConnection connection,
+        Func<Type, DbConnection, object> repositoryFactory,
         Func<bool> isCurrentRoot,
-        Action onRootFinished)
+        Action onRootFinished,
+        UnitOfWorkOptions? options = null,
+        IUnitOfWorkTransactionFactory? transactionFactory = null)
     {
         _connection = connection;
         _repositoryFactory = repositoryFactory;
         _isCurrentRoot = isCurrentRoot;
         _onRootFinished = onRootFinished;
+        Options = (options ?? DefaultOptions).Validate();
+        _transactionFactory = transactionFactory ?? new DefaultUnitOfWorkTransactionFactory();
     }
 
     internal int ActiveScopeCount => Volatile.Read(ref _activeScopeCount);
@@ -43,7 +50,8 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         (UnitOfWorkLifecycleState)Volatile.Read(ref _lifecycleState);
     internal UnitOfWorkCompletionOutcome CompletionOutcome =>
         (UnitOfWorkCompletionOutcome)Volatile.Read(ref _completionOutcome);
-    internal IDbConnection Connection
+    internal UnitOfWorkOptions Options { get; }
+    internal DbConnection Connection
     {
         get
         {
@@ -52,9 +60,9 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
                 ?? throw new UnitOfWorkStateException("The unit of work transaction has not been initialized.");
         }
     }
-    internal IDbTransaction? Transaction => _transaction;
+    internal DbTransaction? Transaction => _transaction;
 
-    IDbConnection IUnitOfWorkContext.Connection => Connection;
+    DbConnection IUnitOfWorkContext.Connection => Connection;
 
     T IUnitOfWorkContext.GetRepository<T>() => GetRepository<T>();
 
@@ -96,14 +104,12 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         try
         {
             if (_connection.State != ConnectionState.Open)
-            {
-                if (_connection is DbConnection dbConnection)
-                    await dbConnection.OpenAsync();
-                else
-                    _connection.Open();
-            }
+                await _connection.OpenAsync();
 
-            _transaction = _connection.BeginTransaction();
+            _transaction = await _transactionFactory.BeginTransactionAsync(
+                _connection,
+                Options,
+                CancellationToken.None);
             _boundConnection = new TransactionBoundDbConnection(this);
             Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Active);
             completion.TrySetResult();
@@ -224,7 +230,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
             throw new UnitOfWorkStateException("The unit of work root is not active.");
     }
 
-    internal IDbCommand CreateTransactionBoundCommand()
+    internal DbCommand CreateTransactionBoundCommand()
     {
         EnsureUsable();
 
@@ -232,12 +238,16 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
             ?? throw new UnitOfWorkStateException("The unit of work transaction has not been initialized.");
         var command = _connection.CreateCommand();
         command.Transaction = transaction;
+        if (Options.CommandTimeoutSeconds is { } timeout)
+            command.CommandTimeout = timeout;
         return command;
     }
 
     internal string GetConnectionString() => _connection.ConnectionString;
     internal int GetConnectionTimeout() => _connection.ConnectionTimeout;
     internal string GetDatabase() => _connection.Database;
+    internal string GetDataSource() => _connection.DataSource;
+    internal string GetServerVersion() => _connection.ServerVersion;
     internal ConnectionState GetConnectionState() => _connection.State;
 
     internal IsolationLevel GetTransactionIsolationLevel() => (_transaction

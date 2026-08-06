@@ -1,4 +1,5 @@
 using System.Data;
+using System.Data.Common;
 using UnitOfWork.Core;
 using UnitOfWork.Core.Exceptions;
 using UnitOfWork.Tests.Fixtures;
@@ -420,7 +421,7 @@ public class ScopeLifecycleTests
     }
 
     private static RootUnitOfWork CreateRoot(
-        IDbConnection connection,
+        DbConnection connection,
         Action? onRootFinished = null) =>
         new(
             connection,

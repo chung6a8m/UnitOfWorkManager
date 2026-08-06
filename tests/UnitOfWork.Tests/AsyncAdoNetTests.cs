@@ -8,6 +8,63 @@ namespace UnitOfWork.Tests;
 public class AsyncAdoNetTests
 {
     [Fact]
+    public async Task Sqlite_Async_Insert_And_Complete_Commits_Data()
+    {
+        using var database = new SqliteTestDb();
+        var manager = CreateSqliteManager(database);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await using var scope = await manager.BeginAsync(
+            new UnitOfWorkOptions { CommandTimeoutSeconds = 5 },
+            cancellation.Token);
+        await using var command = scope.Connection.CreateCommand();
+        command.CommandText = "INSERT INTO Counter (Value) VALUES (41);";
+
+        Assert.Equal(1, await command.ExecuteNonQueryAsync(cancellation.Token));
+        await scope.CompleteAsync(cancellation.Token);
+
+        Assert.Equal(1, database.CountRows());
+    }
+
+    [Fact]
+    public async Task Sqlite_Async_Insert_And_Rollback_Discards_Data()
+    {
+        using var database = new SqliteTestDb();
+        var manager = CreateSqliteManager(database);
+
+        await using var scope = await manager.BeginAsync();
+        await using var command = scope.Connection.CreateCommand();
+        command.CommandText = "INSERT INTO Counter (Value) VALUES (42);";
+
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        await scope.RollbackAsync();
+
+        Assert.Equal(0, database.CountRows());
+    }
+
+    [Fact]
+    public async Task Sqlite_Async_Cancellation_Leaves_Scope_Usable_For_Rollback()
+    {
+        using var database = new SqliteTestDb();
+        var manager = CreateSqliteManager(database);
+        await using var scope = await manager.BeginAsync();
+        await using var canceledCommand = scope.Connection.CreateCommand();
+        await using var usableCommand = scope.Connection.CreateCommand();
+        using var cancellation = new CancellationTokenSource();
+        canceledCommand.CommandText = "INSERT INTO Counter (Value) VALUES (43);";
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => canceledCommand.ExecuteNonQueryAsync(cancellation.Token));
+
+        usableCommand.CommandText = "SELECT COUNT(*) FROM Counter;";
+        Assert.Equal(0L, await usableCommand.ExecuteScalarAsync());
+        await scope.RollbackAsync();
+
+        Assert.Equal(0, database.CountRows());
+    }
+
+    [Fact]
     public async Task BeginAsync_Uses_OpenAsync_And_BeginTransactionAsync()
     {
         var connection = new ControlledDbConnection();
@@ -204,4 +261,7 @@ public class AsyncAdoNetTests
 
     private static UnitOfWorkManager CreateManager(AsyncOnlyDbConnection provider) =>
         new(new ControlledConnectionFactory(provider), (_, _) => throw new NotSupportedException());
+
+    private static UnitOfWorkManager CreateSqliteManager(SqliteTestDb database) =>
+        new(database, (_, _) => throw new NotSupportedException());
 }

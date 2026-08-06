@@ -1,6 +1,6 @@
 # UnitOfWork.Core
 
-Thư viện mẫu triển khai Unit of Work trên `IDbConnection`/`IDbTransaction`.
+Thư viện mẫu triển khai Unit of Work trên `DbConnection`/`DbTransaction`.
 
 ## Contract giao dịch P0
 
@@ -42,26 +42,115 @@ factory là constructor-only, đồng bộ và không làm I/O/`await`; nếu fa
 lỗi, instance/key chưa được cache và lần gọi tiếp theo có thể thử lại. Lock order
 luôn là `scope settlement lock -> root lifecycle lock -> operation flag`.
 
-Mẫu dùng cơ bản:
+Mẫu async dùng options và cancellation:
 
 ```csharp
-await using var scope = await manager.BeginAsync();
+using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+var options = new UnitOfWorkOptions
+{
+    IsolationLevel = IsolationLevel.ReadCommitted,
+    CommandTimeoutSeconds = 15
+};
 
-// Thực hiện repository/Dapper work qua scope hoặc manager.Current.
+await using var scope = await manager.BeginAsync(options, cancellation.Token);
 
-await scope.CompleteAsync();
+await using var command = scope.Connection.CreateCommand();
+command.CommandText = "UPDATE Counter SET Value = Value + 1 WHERE Id = 1;";
+await command.ExecuteNonQueryAsync(cancellation.Token);
+
+await scope.CompleteAsync(cancellation.Token);
 ```
+
+Tương thích sync vẫn được giữ cho code cũ; nó chỉ là fallback khi provider/API
+async không thể dùng:
+
+```csharp
+using var scope = await manager.BeginAsync();
+using var command = scope.Connection.CreateCommand();
+command.CommandText = "UPDATE Counter SET Value = Value + 1 WHERE Id = 1;";
+command.ExecuteNonQuery();
+scope.CompleteAsync().GetAwaiter().GetResult();
+```
+
+Reader streaming giữ operation lease cho đến khi được đóng/dispose. Không chạy
+command khác, complete, hay rollback đồng thời trên cùng root khi reader đang
+mở; luôn dispose reader trước:
+
+```csharp
+await using var reader = await command.ExecuteReaderAsync(cancellation.Token);
+while (await reader.ReadAsync(cancellation.Token))
+{
+    // stream rows
+}
+// reader is disposed here; the next operation may now start.
+```
+
+Không dùng fail-fast `Task.WhenAll` cho nhiều command trên cùng scope:
+
+```csharp
+// Sai: shared root chỉ cho một operation tại một thời điểm.
+await Task.WhenAll(command1.ExecuteNonQueryAsync(), command2.ExecuteNonQueryAsync());
+```
+
+Task con kế thừa `ExecutionContext` cũng kế thừa ambient root. Chúng có thể dùng
+root **tuần tự** khi root còn active, nhưng operation đồng thời bị reject ngay
+lập tức. Task dùng `ExecutionContext.SuppressFlow()` không kế thừa root và bị
+reject; một scope bị giữ lại sau root finalization cũng bị reject.
+
+Factory repository có chữ ký `Func<Type, DbConnection, object>`, được gọi dưới
+root lifecycle lock, chỉ tạo object đồng bộ và **không làm I/O/`await`**. Nếu
+factory ném lỗi thì không cache instance/key, nên lần sau có thể thử lại.
+
+`CommandBehavior.CloseConnection` bị từ chối vì root sở hữu connection;
+`DbBatch` cũng không được hỗ trợ trên connection transaction-bound. Không tự
+gán `command.Transaction`: command được tạo từ `scope.Connection` đã enlist
+vào root transaction.
+
+Transaction factory mặc định chỉ chuyển `IsolationLevel` sang provider.
+`ReadOnly` và `TransactionTimeout` fail-fast để tránh hứa một behavior không
+portable. Provider nào hỗ trợ chúng phải được inject factory riêng:
+
+```csharp
+var manager = new UnitOfWorkManager(connectionFactory, repositoryFactory,
+    new ProviderSpecificTransactionFactory());
+
+await using var scope = await manager.BeginAsync(new UnitOfWorkOptions
+{
+    ReadOnly = true,
+    TransactionTimeout = TimeSpan.FromSeconds(10)
+});
+```
+
+`ProviderSpecificTransactionFactory` triển khai `IUnitOfWorkTransactionFactory`
+và nhận đầy đủ `UnitOfWorkOptions` cùng `CancellationToken`; nó chịu trách nhiệm
+dịch read-only/timeout sang API riêng của provider.
+
+### Failure và cancellation policy
+
+| Tình huống | Outcome | Retry policy |
+|---|---|---|
+| Command bị cancel/lỗi trước completion | Operation lease được release; scope còn active và có thể `RollbackAsync()` | Có thể retry command theo policy ứng dụng nếu provider cho phép |
+| Reader creation bị cancel/lỗi | Lease được release; scope còn active | Có thể rollback hoặc thử reader/command khác tuần tự |
+| `CompleteAsync` bị cancel/lỗi | Root faulted/finalized; không được retry completion | Không retry trên cùng scope/root; bắt đầu UoW mới |
+| `RollbackAsync` bị cancel/lỗi | Root faulted/finalized; không được retry rollback | Không retry trên cùng scope/root; bắt đầu UoW mới |
+| Cleanup lỗi sau commit thành công | Commit outcome vẫn được giữ; ambient luôn bị clear | Không retry commit; quyết định recovery ngoài UoW |
+| `DisposeAsync()` khi chưa complete | Rollback async rõ ràng trước khi dispose resource | Không dùng lại scope/root |
 
 ## Migration từ API cũ
 
-| Before | After |
+| Before P1 | After P1 |
 |---|---|
-| `IUnitOfWork` | `IUnitOfWorkScope` / `IUnitOfWorkContext` |
-| `CommitAsync()` | `CompleteAsync()` |
-| dispose + `ClearCurrent()` | `await using var scope = await BeginAsync()` |
-| factory `(type, connection, transaction)` | `(type, connection)` |
-| `command.Transaction = transaction` | xóa assignment |
-| nested begin trả cùng owner | nested begin trả distinct lease |
+| `IDbConnection` public/factory | `DbConnection` public/factory |
+| `Func<Type, IDbConnection, object>` | `Func<Type, DbConnection, object>` |
+| `BeginAsync()` | `BeginAsync(options, cancellationToken)` |
+| scope chỉ `IDisposable` | scope `IDisposable` + `IAsyncDisposable` |
+| command async không có | `DbCommand.Execute*Async` thật |
+| reader trả raw provider reader | transaction-bound reader giữ operation lease |
+| provider default transaction config | `UnitOfWorkOptions` + transaction factory |
+
+Các đổi tên P0 vẫn áp dụng: `IUnitOfWork` thành `IUnitOfWorkScope` /
+`IUnitOfWorkContext`, `CommitAsync()` thành `CompleteAsync()`, bỏ
+`ClearCurrent()`, và bỏ `command.Transaction = transaction`.
 
 ## Test integration SQLite
 

@@ -10,6 +10,27 @@ namespace UnitOfWork.Tests;
 public class ReaderLifetimeGuardTests
 {
     [Fact]
+    public async Task Sqlite_Async_Reader_Blocks_Second_Command_Until_Disposed()
+    {
+        using var database = new SqliteTestDb();
+        var manager = new UnitOfWorkManager(database, (_, _) => throw new NotSupportedException());
+        await using var scope = await manager.BeginAsync();
+        await using var readerCommand = scope.Connection.CreateCommand();
+        await using var secondCommand = scope.Connection.CreateCommand();
+        readerCommand.CommandText = "SELECT Value FROM Counter;";
+        secondCommand.CommandText = "SELECT COUNT(*) FROM Counter;";
+
+        var reader = await readerCommand.ExecuteReaderAsync();
+
+        await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(
+            () => secondCommand.ExecuteScalarAsync());
+
+        await reader.DisposeAsync();
+        Assert.Equal(0L, await secondCommand.ExecuteScalarAsync());
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
     public async Task Reader_Holds_Operation_Lease_Until_Dispose()
     {
         var reader = new ControlledDbDataReader();

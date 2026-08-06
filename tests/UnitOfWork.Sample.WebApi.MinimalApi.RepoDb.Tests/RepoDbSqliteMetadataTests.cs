@@ -1,6 +1,7 @@
 using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using RepoDb;
+using RepoDb.Contexts.Cachers;
 using RepoDb.Interfaces;
 using UnitOfWork.Core;
 using UnitOfWork.Sample.WebApi.MinimalApi.Infrastructure;
@@ -17,7 +18,7 @@ public sealed class RepoDbSqliteMetadataTests
         using var database = new RepoDbSqliteTestDatabase();
         var helper = new CountingDbHelper(CreateOfficialHelper());
         RegisterMappings(helper);
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(database);
 
         await using (var scope = await manager.BeginAsync())
@@ -36,7 +37,7 @@ public sealed class RepoDbSqliteMetadataTests
         using var database = new RepoDbSqliteTestDatabase();
         var helper = new CountingDbHelper(CreateOfficialHelper());
         RegisterMappings(helper);
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(database);
 
         await InsertAndCommitAsync(manager, "counter", 10);
@@ -52,7 +53,7 @@ public sealed class RepoDbSqliteMetadataTests
         using var database = new RepoDbSqliteTestDatabase();
         var helper = new CountingDbHelper(CreateOfficialHelper());
         RegisterMappings(helper);
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(database);
 
         await using (var scope = await manager.BeginAsync())
@@ -73,7 +74,7 @@ public sealed class RepoDbSqliteMetadataTests
     {
         using var database = new RepoDbSqliteTestDatabase();
         RegisterMappings(CreateOfficialHelper());
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(database);
         long identity;
 
@@ -114,7 +115,7 @@ public sealed class RepoDbSqliteMetadataTests
             }
         };
         RegisterMappings(injectedHelper);
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(database);
         await using var scope = await manager.BeginAsync();
         using var cancellation = new CancellationTokenSource();
@@ -155,7 +156,7 @@ public sealed class RepoDbSqliteMetadataTests
             }
         };
         RegisterMappings(injectedHelper);
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(database);
         await using var scope = await manager.BeginAsync();
 
@@ -190,6 +191,12 @@ public sealed class RepoDbSqliteMetadataTests
         StatementBuilderMapper.Add<TransactionBoundDbConnection>(
             StatementBuilderMapper.Get<SqliteConnection>(),
             true);
+    }
+
+    private static void FlushRepoDbInsertCaches()
+    {
+        InsertExecutionContextCache.Flush();
+        DbFieldCache.Flush();
     }
 
     private static async Task InsertAndCommitAsync(

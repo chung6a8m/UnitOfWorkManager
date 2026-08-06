@@ -5,7 +5,7 @@ using UnitOfWork.Core.Exceptions;
 
 namespace UnitOfWork.Core;
 
-internal sealed class RootUnitOfWork
+internal sealed class RootUnitOfWork : IUnitOfWorkContext
 {
     private const string CleanupExceptionDataKey = "UnitOfWorkCleanupException";
 
@@ -53,6 +53,10 @@ internal sealed class RootUnitOfWork
         }
     }
     internal IDbTransaction? Transaction => _transaction;
+
+    IDbConnection IUnitOfWorkContext.Connection => Connection;
+
+    T IUnitOfWorkContext.GetRepository<T>() => GetRepository<T>();
 
     internal UnitOfWorkScope AcquireScope()
     {

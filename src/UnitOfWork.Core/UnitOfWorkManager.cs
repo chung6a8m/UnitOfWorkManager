@@ -4,108 +4,102 @@ namespace UnitOfWork.Core;
 
 public class UnitOfWorkManager : IUnitOfWorkManager
 {
-    private const string CleanupExceptionDataKey = "UnitOfWorkCleanupException";
-
     private sealed class AmbientUnitOfWorkHolder
     {
-        public UnitOfWork? UnitOfWork;
-        public Task<IUnitOfWork>? Initialization;
+        public RootUnitOfWork? Root;
+        public Task? Initialization;
     }
 
-    // static + AsyncLocal: "current UoW" theo dõi xuyên suốt 1 async call chain (1 flow logic).
-    // Holder mutable cho phép async helper dọn state mà caller vẫn quan sát được.
-    private static readonly AsyncLocal<AmbientUnitOfWorkHolder?> _current = new();
-
+    private readonly AsyncLocal<AmbientUnitOfWorkHolder?> _current = new();
     private readonly IDbConnectionFactory _connectionFactory;
-    private readonly Func<Type, IDbConnection, IDbTransaction?, object> _repositoryFactory;
+    private readonly Func<Type, IDbConnection, object> _repositoryFactory;
 
     public UnitOfWorkManager(
         IDbConnectionFactory connectionFactory,
-        Func<Type, IDbConnection, IDbTransaction?, object> repositoryFactory)
+        Func<Type, IDbConnection, object> repositoryFactory)
     {
         _connectionFactory = connectionFactory;
         _repositoryFactory = repositoryFactory;
     }
 
-    public bool HasCurrent => _current.Value?.UnitOfWork != null;
+    public bool HasCurrent => _current.Value?.Root is not null;
 
-    public IUnitOfWork Current => _current.Value?.UnitOfWork
-        ?? throw new InvalidOperationException("Chưa có UnitOfWork nào được bắt đầu.");
+    public IUnitOfWorkContext Current => _current.Value?.Root
+        ?? throw new InvalidOperationException("No unit of work has been started.");
 
-    public Task<IUnitOfWork> BeginAsync()
+    public Task<IUnitOfWorkScope> BeginAsync()
     {
         var currentHolder = _current.Value;
-        if (currentHolder?.UnitOfWork is { } current)
+        if (currentHolder?.Root is { } currentRoot)
         {
-            current.IncrementRef();
-            return currentHolder.Initialization
-                ?? Task.FromResult<IUnitOfWork>(current);
+            var initialization = currentHolder.Initialization
+                ?? throw new InvalidOperationException("The ambient unit of work has no initialization task.");
+            return AwaitScopeAsync(currentRoot.AcquireScope(), initialization);
         }
 
-        var connection = _connectionFactory.CreateConnection();
-        var uow = new UnitOfWork(connection, _repositoryFactory);
-        var completion = new TaskCompletionSource<IUnitOfWork>(
+        var holder = new AmbientUnitOfWorkHolder();
+        var root = CreateRoot(holder);
+        var completion = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var holder = new AmbientUnitOfWorkHolder
-        {
-            UnitOfWork = uow,
-            Initialization = completion.Task
-        };
+        holder.Root = root;
+        holder.Initialization = completion.Task;
         _current.Value = holder;
 
-        _ = InitializeAsync(uow, holder, completion);
-        return completion.Task;
+        var scope = root.AcquireScope();
+        _ = InitializeRootAsync(root, holder, completion);
+        return AwaitScopeAsync(scope, completion.Task);
     }
 
-    private static async Task InitializeAsync(
-        UnitOfWork uow,
+    private RootUnitOfWork CreateRoot(AmbientUnitOfWorkHolder holder)
+    {
+        RootUnitOfWork root = null!;
+        root = new RootUnitOfWork(
+            _connectionFactory.CreateConnection(),
+            _repositoryFactory,
+            () => ReferenceEquals(_current.Value?.Root, root),
+            () => ClearRoot(holder, root));
+        return root;
+    }
+
+    private static async Task InitializeRootAsync(
+        RootUnitOfWork root,
         AmbientUnitOfWorkHolder holder,
-        TaskCompletionSource<IUnitOfWork> completion)
+        TaskCompletionSource completion)
     {
         try
         {
-            await uow.BeginTransactionAsync();
-            completion.TrySetResult(uow);
+            await root.InitializeAsync();
+            completion.TrySetResult();
         }
         catch (Exception initializationError)
         {
-            if (ReferenceEquals(holder.UnitOfWork, uow))
+            if (ReferenceEquals(holder.Root, root))
             {
-                holder.UnitOfWork = null;
+                holder.Root = null;
                 holder.Initialization = null;
-            }
-
-            try
-            {
-                uow.Dispose();
-            }
-            catch (Exception cleanupError)
-            {
-                initializationError.Data[CleanupExceptionDataKey] = cleanupError;
             }
 
             completion.TrySetException(initializationError);
         }
     }
 
-    public void ClearCurrent() => ClearAmbientState();
-
-    private static void ClearAmbientState()
+    private static async Task<IUnitOfWorkScope> AwaitScopeAsync(
+        IUnitOfWorkScope scope,
+        Task initialization)
     {
-        if (_current.Value is { } holder)
-        {
-            holder.UnitOfWork = null;
-            holder.Initialization = null;
-        }
-
-        _current.Value = null;
+        await initialization;
+        return scope;
     }
 
-    /// <summary>
-    /// Chỉ dùng cho test cleanup (mở qua InternalsVisibleTo). `_current` là AsyncLocal *tĩnh*
-    /// dùng chung cho mọi instance UnitOfWorkManager trong process — nếu một test fail giữa
-    /// chừng và bỏ lỡ ClearCurrent(), trạng thái cũ có thể rò rỉ sang test kế tiếp. Test base
-    /// gọi hàm này trong Dispose() (luôn chạy dù test pass/fail) để đảm bảo sạch tuyệt đối.
-    /// </summary>
-    internal static void ResetAmbientStateForTests() => ClearAmbientState();
+    private void ClearRoot(AmbientUnitOfWorkHolder holder, RootUnitOfWork root)
+    {
+        if (!ReferenceEquals(holder.Root, root))
+            return;
+
+        holder.Root = null;
+        holder.Initialization = null;
+
+        if (ReferenceEquals(_current.Value, holder))
+            _current.Value = null;
+    }
 }

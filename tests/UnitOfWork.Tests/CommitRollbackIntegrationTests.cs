@@ -7,7 +7,7 @@ namespace UnitOfWork.Tests;
 public class CommitRollbackIntegrationTests : Fixtures.UnitOfWorkTestBase
 {
     private static UnitOfWorkManager CreateManager(SqliteTestDb db) =>
-        new(db, (type, conn, tran) =>
+        new(db, (type, conn) =>
         {
             if (type == typeof(ICounterRepository)) return new CounterRepository(conn);
             throw new NotSupportedException($"Repository chưa đăng ký: {type.Name}");
@@ -19,12 +19,10 @@ public class CommitRollbackIntegrationTests : Fixtures.UnitOfWorkTestBase
         using var db = new SqliteTestDb();
         var manager = CreateManager(db);
 
-        var uow = await manager.BeginAsync();
-        uow.GetRepository<ICounterRepository>().Insert(1);
-        uow.GetRepository<ICounterRepository>().Insert(2);
-        await uow.CommitAsync();
-        uow.Dispose();
-        manager.ClearCurrent();
+        using var scope = await manager.BeginAsync();
+        scope.GetRepository<ICounterRepository>().Insert(1);
+        scope.GetRepository<ICounterRepository>().Insert(2);
+        await scope.CompleteAsync();
 
         Assert.Equal(2, db.CountRows());
     }
@@ -35,11 +33,9 @@ public class CommitRollbackIntegrationTests : Fixtures.UnitOfWorkTestBase
         using var db = new SqliteTestDb();
         var manager = CreateManager(db);
 
-        var uow = await manager.BeginAsync();
-        uow.GetRepository<ICounterRepository>().Insert(1);
-        await uow.RollbackAsync();
-        uow.Dispose();
-        manager.ClearCurrent();
+        using var scope = await manager.BeginAsync();
+        scope.GetRepository<ICounterRepository>().Insert(1);
+        await scope.RollbackAsync();
 
         Assert.Equal(0, db.CountRows());
     }
@@ -50,28 +46,26 @@ public class CommitRollbackIntegrationTests : Fixtures.UnitOfWorkTestBase
         using var db = new SqliteTestDb();
         var manager = CreateManager(db);
 
-        await OuterServiceAsync(manager, db);
-        manager.ClearCurrent();
+        await OuterServiceAsync(manager);
 
         Assert.Equal(2, db.CountRows()); // outer(1) + inner(1) cùng commit chung 1 transaction
     }
 
-    private static async Task OuterServiceAsync(IUnitOfWorkManager manager, SqliteTestDb db)
+    private static async Task OuterServiceAsync(IUnitOfWorkManager manager)
     {
-        var uow = await manager.BeginAsync();
-        uow.GetRepository<ICounterRepository>().Insert(1);
+        using var scope = await manager.BeginAsync();
+        scope.GetRepository<ICounterRepository>().Insert(1);
 
-        await InnerServiceAsync(manager); // service khác tự BeginAsync() -> tái sử dụng cùng UoW
+        await InnerServiceAsync(manager); // service khác nhận lease riêng trên cùng root
 
-        await uow.CommitAsync();
-        uow.Dispose();
+        await scope.CompleteAsync();
     }
 
     private static async Task InnerServiceAsync(IUnitOfWorkManager manager)
     {
-        var uow = await manager.BeginAsync();
-        uow.GetRepository<ICounterRepository>().Insert(2);
-        await uow.CommitAsync(); // chỉ giảm refcount, KHÔNG commit thật vì chưa phải outermost
+        using var scope = await manager.BeginAsync();
+        scope.GetRepository<ICounterRepository>().Insert(2);
+        await scope.CompleteAsync(); // chỉ settle lease, chưa commit thật vì outer còn active
     }
 
     [Fact]
@@ -80,8 +74,8 @@ public class CommitRollbackIntegrationTests : Fixtures.UnitOfWorkTestBase
         using var db = new SqliteTestDb();
         var manager = CreateManager(db);
 
-        var uow = await manager.BeginAsync();
-        uow.GetRepository<ICounterRepository>().Insert(1); // "thành công" ở outer
+        using var scope = await manager.BeginAsync();
+        scope.GetRepository<ICounterRepository>().Insert(1); // "thành công" ở outer
 
         try
         {
@@ -92,24 +86,22 @@ public class CommitRollbackIntegrationTests : Fixtures.UnitOfWorkTestBase
             // outer vẫn tưởng nó ổn và cố Commit — nhưng cờ rollback đã được set bởi inner
         }
 
-        await uow.CommitAsync();
-        uow.Dispose();
-        manager.ClearCurrent();
+        await scope.CompleteAsync();
 
         Assert.Equal(0, db.CountRows());
     }
 
     private static async Task FailingInnerServiceAsync(IUnitOfWorkManager manager)
     {
-        var uow = await manager.BeginAsync();
-        uow.GetRepository<ICounterRepository>().Insert(2);
+        using var scope = await manager.BeginAsync();
+        scope.GetRepository<ICounterRepository>().Insert(2);
         try
         {
             throw new InvalidOperationException("Lỗi nghiệp vụ giả lập ở tầng trong");
         }
         catch
         {
-            await uow.RollbackAsync();
+            await scope.RollbackAsync();
             throw;
         }
     }

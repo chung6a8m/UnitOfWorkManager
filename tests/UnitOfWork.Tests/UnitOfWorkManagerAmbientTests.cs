@@ -10,7 +10,7 @@ public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
     private sealed class RepositoryMarker { }
 
     private static UnitOfWorkManager CreateManager(IDbConnectionFactory factory) =>
-        new(factory, (type, _, _) =>
+        new(factory, (type, _) =>
             type == typeof(RepositoryMarker)
                 ? new RepositoryMarker()
                 : throw new NotSupportedException());
@@ -21,19 +21,18 @@ public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
         var connection = new ControlledDbConnection(initiallyOpen: true);
         var manager = CreateManager(new ControlledConnectionFactory(connection));
 
-        var uow = await manager.BeginAsync();
+        using var scope = await manager.BeginAsync();
 
         Assert.True(manager.HasCurrent);
-        Assert.Same(uow, manager.Current);
-        Assert.NotNull(uow.GetRepository<RepositoryMarker>());
+        Assert.Same(scope.Connection, manager.Current.Connection);
+        Assert.NotNull(scope.GetRepository<RepositoryMarker>());
 
-        await uow.RollbackAsync();
-        uow.Dispose();
-        manager.ClearCurrent();
+        await scope.RollbackAsync();
+        Assert.False(manager.HasCurrent);
     }
 
     [Fact]
-    public async Task Nested_Begin_During_Initialization_Awaits_The_Same_UnitOfWork()
+    public async Task Nested_Begin_During_Initialization_Awaits_The_Same_Root()
     {
         var connection = new ControlledDbConnection();
         var factory = new ControlledConnectionFactory(connection);
@@ -51,7 +50,8 @@ public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
             connection.ReleaseOpen();
             var results = await Task.WhenAll(firstBegin, nestedBegin);
 
-            Assert.Same(results[0], results[1]);
+            Assert.NotSame(results[0], results[1]);
+            Assert.Same(results[0].Connection, results[1].Connection);
             await results[1].RollbackAsync();
             await results[0].RollbackAsync();
         }
@@ -59,9 +59,8 @@ public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
         {
             connection.ReleaseOpen();
             var completed = await Task.WhenAll(firstBegin, nestedBegin);
-            foreach (var uow in completed.Distinct())
-                uow.Dispose();
-            manager.ClearCurrent();
+            foreach (var scope in completed)
+                scope.Dispose();
         }
     }
 
@@ -70,7 +69,7 @@ public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
     {
         var connection = new ControlledDbConnection();
         var manager = CreateManager(new ControlledConnectionFactory(connection));
-        Task<IUnitOfWork>? reentrantBegin = null;
+        Task<IUnitOfWorkScope>? reentrantBegin = null;
         connection.Opening = () => reentrantBegin = manager.BeginAsync();
 
         var firstBegin = manager.BeginAsync();
@@ -83,7 +82,8 @@ public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
             connection.ReleaseOpen();
             var results = await Task.WhenAll(firstBegin, reentrantBegin);
 
-            Assert.Same(results[0], results[1]);
+            Assert.NotSame(results[0], results[1]);
+            Assert.Same(results[0].Connection, results[1].Connection);
             await results[1].RollbackAsync();
             await results[0].RollbackAsync();
         }
@@ -93,10 +93,9 @@ public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
             if (reentrantBegin is not null)
             {
                 var completed = await Task.WhenAll(firstBegin, reentrantBegin);
-                foreach (var uow in completed.Distinct())
-                    uow.Dispose();
+                foreach (var scope in completed)
+                    scope.Dispose();
             }
-            manager.ClearCurrent();
         }
     }
 
@@ -123,11 +122,12 @@ public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
         Assert.Throws<InvalidOperationException>(() => manager.Current);
 
         var next = await manager.BeginAsync();
-        Assert.NotNull(next.GetRepository<RepositoryMarker>());
+        using (next)
+        {
+            Assert.NotNull(next.GetRepository<RepositoryMarker>());
 
-        await next.RollbackAsync();
-        next.Dispose();
-        manager.ClearCurrent();
+            await next.RollbackAsync();
+        }
     }
 
     [Fact]

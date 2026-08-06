@@ -38,24 +38,20 @@ public class DisposalTests : Fixtures.UnitOfWorkTestBase
     }
 
     [Fact]
-    public async Task Manager_ClearCurrent_Allows_Fresh_BeginAsync_Afterwards()
+    public async Task Manager_Finalization_Allows_Fresh_BeginAsync_Afterwards()
     {
         using var db = new SqliteTestDb();
-        var manager = new UnitOfWorkManager(db, (t, c, tr) =>
+        var manager = new UnitOfWorkManager(db, (t, c) =>
             t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
 
-        var first = await manager.BeginAsync();
-        await first.CommitAsync();
-        first.Dispose();
-        manager.ClearCurrent();
+        using var first = await manager.BeginAsync();
+        await first.CompleteAsync();
 
         Assert.False(manager.HasCurrent);
 
-        var second = await manager.BeginAsync();
+        using var second = await manager.BeginAsync();
         Assert.NotSame(first, second);
 
         await second.RollbackAsync();
-        second.Dispose();
-        manager.ClearCurrent();
     }
 }

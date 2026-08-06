@@ -10,6 +10,142 @@ namespace UnitOfWork.Tests;
 public class ScopeLifecycleTests
 {
     [Fact]
+    public async Task PreCanceled_Complete_Leaves_Scope_Active()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var root = CreateRoot(connection);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => scope.CompleteAsync(cancellation.Token));
+
+        Assert.Equal(1, root.ActiveScopeCount);
+        Assert.Equal(UnitOfWorkLifecycleState.Active, root.LifecycleState);
+        Assert.Equal(UnitOfWorkCompletionOutcome.None, root.CompletionOutcome);
+        Assert.False(root.RollbackRequested);
+
+        await scope.CompleteAsync();
+        Assert.Equal(UnitOfWorkCompletionOutcome.Committed, root.CompletionOutcome);
+    }
+
+    [Fact]
+    public async Task PreCanceled_Rollback_Leaves_Scope_Active()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var root = CreateRoot(connection);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => scope.RollbackAsync(cancellation.Token));
+
+        Assert.Equal(1, root.ActiveScopeCount);
+        Assert.Equal(UnitOfWorkLifecycleState.Active, root.LifecycleState);
+        Assert.Equal(UnitOfWorkCompletionOutcome.None, root.CompletionOutcome);
+        Assert.False(root.RollbackRequested);
+
+        await scope.RollbackAsync();
+        Assert.Equal(UnitOfWorkCompletionOutcome.RolledBack, root.CompletionOutcome);
+    }
+
+    [Fact]
+    public async Task Commit_Cancellation_Faults_Root_And_Is_Not_Retried()
+    {
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            blockCommitAsync: true);
+        var root = CreateRoot(connection);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        using var cancellation = new CancellationTokenSource();
+
+        var completion = scope.CompleteAsync(cancellation.Token);
+        await connection.CommitAsyncStarted.Task;
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => completion);
+        Assert.Equal(cancellation.Token, connection.LastCommitCancellationToken);
+        Assert.Equal(1, connection.LastTransaction!.CommitAsyncCount);
+        Assert.Equal(UnitOfWorkLifecycleState.Faulted, root.LifecycleState);
+        Assert.Equal(UnitOfWorkCompletionOutcome.Faulted, root.CompletionOutcome);
+        Assert.Equal(1, connection.LastTransaction.TransactionDisposeAsyncCount);
+        Assert.Equal(1, connection.ConnectionDisposeAsyncCount);
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(() => scope.CompleteAsync());
+        Assert.Equal(1, connection.LastTransaction.CommitAsyncCount);
+    }
+
+    [Fact]
+    public async Task Rollback_Cancellation_Faults_Root_And_Is_Not_Retried()
+    {
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            blockRollbackAsync: true);
+        var root = CreateRoot(connection);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        using var cancellation = new CancellationTokenSource();
+
+        var rollback = scope.RollbackAsync(cancellation.Token);
+        await connection.RollbackAsyncStarted.Task;
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => rollback);
+        Assert.Equal(cancellation.Token, connection.LastRollbackCancellationToken);
+        Assert.Equal(1, connection.LastTransaction!.RollbackAsyncCount);
+        Assert.Equal(UnitOfWorkLifecycleState.Faulted, root.LifecycleState);
+        Assert.Equal(UnitOfWorkCompletionOutcome.Faulted, root.CompletionOutcome);
+        Assert.Equal(1, connection.LastTransaction.TransactionDisposeAsyncCount);
+        Assert.Equal(1, connection.ConnectionDisposeAsyncCount);
+
+        await Assert.ThrowsAsync<UnitOfWorkStateException>(() => scope.RollbackAsync());
+        Assert.Equal(1, connection.LastTransaction.RollbackAsyncCount);
+    }
+
+    [Fact]
+    public async Task Commit_Success_With_Cleanup_Failure_Preserves_Committed_Outcome()
+    {
+        var cleanupFailure = new IOException("transaction async dispose failed");
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            transactionDisposeAsyncException: cleanupFailure);
+        var root = CreateRoot(connection);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        var actual = await Assert.ThrowsAsync<IOException>(() => scope.CompleteAsync());
+
+        Assert.Same(cleanupFailure, actual);
+        Assert.Equal(UnitOfWorkCompletionOutcome.Committed, root.CompletionOutcome);
+        Assert.Equal(UnitOfWorkLifecycleState.Faulted, root.LifecycleState);
+        Assert.Equal(1, connection.LastTransaction!.CommitAsyncCount);
+    }
+
+    [Fact]
+    public async Task Rollback_Success_With_Cleanup_Failure_Preserves_RolledBack_Outcome()
+    {
+        var cleanupFailure = new IOException("connection async dispose failed");
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            connectionDisposeAsyncException: cleanupFailure);
+        var root = CreateRoot(connection);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        var actual = await Assert.ThrowsAsync<IOException>(() => scope.RollbackAsync());
+
+        Assert.Same(cleanupFailure, actual);
+        Assert.Equal(UnitOfWorkCompletionOutcome.RolledBack, root.CompletionOutcome);
+        Assert.Equal(UnitOfWorkLifecycleState.Faulted, root.LifecycleState);
+        Assert.Equal(1, connection.LastTransaction!.RollbackAsyncCount);
+    }
+
+    [Fact]
     public async Task AcquireScope_Returns_Distinct_Leases_Over_One_Root()
     {
         var connection = new ControlledDbConnection(initiallyOpen: true);

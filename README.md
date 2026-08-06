@@ -13,6 +13,8 @@ và execution context. Begin lồng nhau không trả lại cùng một owner/sc
   đó đúng một lần; nó không tự commit root transaction khi vẫn còn scope khác.
 - Dispose một scope chưa complete sẽ yêu cầu rollback root transaction. Do đó,
   một scope trong incomplete vẫn làm outer scope rollback khi root được settle.
+- Ứng dụng async nên dùng `await using` để rollback/commit cleanup đi qua API
+  async thật của provider. `Dispose()` chỉ là compatibility fallback đồng bộ.
 - Dispose scope trong không sở hữu, dispose, hoặc giải phóng raw root connection
   hay transaction; chỉ root finalization mới làm việc đó.
 - `manager.Current` là context view (`IUnitOfWorkContext`) của root hiện tại,
@@ -28,7 +30,7 @@ và execution context. Begin lồng nhau không trả lại cùng một owner/sc
 Mẫu dùng cơ bản:
 
 ```csharp
-using var scope = await manager.BeginAsync();
+await using var scope = await manager.BeginAsync();
 
 // Thực hiện repository/Dapper work qua scope hoặc manager.Current.
 
@@ -41,7 +43,7 @@ await scope.CompleteAsync();
 |---|---|
 | `IUnitOfWork` | `IUnitOfWorkScope` / `IUnitOfWorkContext` |
 | `CommitAsync()` | `CompleteAsync()` |
-| dispose + `ClearCurrent()` | `using var scope = await BeginAsync()` |
+| dispose + `ClearCurrent()` | `await using var scope = await BeginAsync()` |
 | factory `(type, connection, transaction)` | `(type, connection)` |
 | `command.Transaction = transaction` | xóa assignment |
 | nested begin trả cùng owner | nested begin trả distinct lease |

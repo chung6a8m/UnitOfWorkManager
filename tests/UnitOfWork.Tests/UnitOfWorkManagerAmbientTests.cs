@@ -159,7 +159,7 @@ public sealed class UnitOfWorkManagerAmbientTests
         var manager = CreateManager(new ControlledConnectionFactory(connection));
         var scope = await manager.BeginAsync();
 
-        var actual = await Assert.ThrowsAsync<IOException>(scope.CompleteAsync);
+        var actual = await Assert.ThrowsAsync<IOException>(() => scope.CompleteAsync());
 
         Assert.Same(transactionCleanupError, actual);
         Assert.True(connection.IsDisposed);

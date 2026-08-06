@@ -33,8 +33,13 @@ public class UnitOfWorkManager : IUnitOfWorkManager
     public IUnitOfWorkContext Current => _current.Value?.Root
         ?? throw new InvalidOperationException("No unit of work has been started.");
 
-    public Task<IUnitOfWorkScope> BeginAsync(UnitOfWorkOptions? options = null)
+    public Task<IUnitOfWorkScope> BeginAsync(
+        UnitOfWorkOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
+        if (cancellationToken.IsCancellationRequested)
+            return Task.FromCanceled<IUnitOfWorkScope>(cancellationToken);
+
         UnitOfWorkOptions normalizedOptions;
         try
         {
@@ -56,7 +61,11 @@ public class UnitOfWorkManager : IUnitOfWorkManager
 
             var initialization = currentHolder.Initialization
                 ?? throw new InvalidOperationException("The ambient unit of work has no initialization task.");
-            return AwaitScopeAsync(currentRoot.AcquireScope(), initialization);
+            return AwaitScopeAsync(
+                currentRoot.AcquireScope(),
+                currentRoot,
+                initialization,
+                cancellationToken);
         }
 
         var holder = new AmbientUnitOfWorkHolder();
@@ -69,7 +78,7 @@ public class UnitOfWorkManager : IUnitOfWorkManager
 
         var scope = root.AcquireScope();
         _ = InitializeRootAsync(root, holder, completion);
-        return AwaitScopeAsync(scope, completion.Task);
+        return AwaitScopeAsync(scope, root, completion.Task, cancellationToken);
     }
 
     private RootUnitOfWork CreateRoot(
@@ -94,7 +103,7 @@ public class UnitOfWorkManager : IUnitOfWorkManager
     {
         try
         {
-            await root.InitializeAsync();
+            await root.InitializeAsync().ConfigureAwait(false);
             completion.TrySetResult();
         }
         catch (Exception initializationError)
@@ -110,11 +119,38 @@ public class UnitOfWorkManager : IUnitOfWorkManager
     }
 
     private static async Task<IUnitOfWorkScope> AwaitScopeAsync(
-        IUnitOfWorkScope scope,
-        Task initialization)
+        UnitOfWorkScope scope,
+        RootUnitOfWork root,
+        Task initialization,
+        CancellationToken cancellationToken)
     {
-        await initialization;
-        return scope;
+        try
+        {
+            await initialization.WaitAsync(cancellationToken).ConfigureAwait(false);
+            scope.Activate();
+            return scope;
+        }
+        catch (Exception error)
+        {
+            root.CancelScopeBeforeActivation(scope);
+
+            if (error is OperationCanceledException &&
+                cancellationToken.IsCancellationRequested &&
+                root.InitializationCancellationRequested)
+            {
+                try
+                {
+                    await initialization.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Preserve the caller's cancellation after root cleanup completes.
+                }
+            }
+
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+            throw;
+        }
     }
 
     private void ClearRoot(AmbientUnitOfWorkHolder holder, RootUnitOfWork root)

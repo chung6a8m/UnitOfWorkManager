@@ -15,6 +15,84 @@ public sealed class ManagerIsolationTests
                 : throw new NotSupportedException());
 
     [Fact]
+    public async Task Initialization_Cancellation_Clears_Ambient_And_Allows_Fresh_Begin()
+    {
+        var canceledConnection = new ControlledDbConnection();
+        var freshConnection = new ControlledDbConnection(initiallyOpen: true);
+        var factory = new ControlledConnectionFactory(canceledConnection, freshConnection);
+        var manager = CreateManager(factory);
+        using var cancellation = new CancellationTokenSource();
+
+        var canceledBegin = manager.BeginAsync(cancellationToken: cancellation.Token);
+        await canceledConnection.OpenAsyncStarted.Task;
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledBegin);
+        Assert.True(canceledConnection.LastOpenCancellationToken.IsCancellationRequested);
+        Assert.NotEqual(cancellation.Token, canceledConnection.LastOpenCancellationToken);
+        Assert.Equal(1, canceledConnection.ConnectionDisposeAsyncCount);
+        Assert.False(manager.HasCurrent);
+
+        await using var freshScope = await manager.BeginAsync();
+        Assert.Equal(2, factory.CreateCount);
+        Assert.Same(freshScope.Connection, manager.Current.Connection);
+        await freshScope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Canceled_Nested_Wait_Releases_Only_Its_Scope_Reservation()
+    {
+        var connection = new ControlledDbConnection();
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        using var nestedCancellation = new CancellationTokenSource();
+
+        var outerBegin = manager.BeginAsync();
+        await connection.OpenAsyncStarted.Task;
+        var nestedBegin = manager.BeginAsync(cancellationToken: nestedCancellation.Token);
+        nestedCancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => nestedBegin);
+        Assert.False(connection.LastOpenCancellationToken.IsCancellationRequested);
+        Assert.Equal(0, connection.ConnectionDisposeAsyncCount);
+        Assert.True(manager.HasCurrent);
+
+        connection.ReleaseOpen();
+        await using var outer = await outerBegin;
+        await outer.CompleteAsync();
+
+        Assert.Equal(1, connection.LastTransaction!.CommitAsyncCount);
+        Assert.Equal(0, connection.LastTransaction.RollbackAsyncCount);
+    }
+
+    [Fact]
+    public async Task Last_Canceled_Initialization_Wait_Cancels_Root_Initialization()
+    {
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            blockBeginTransactionAsync: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        using var firstCancellation = new CancellationTokenSource();
+        using var lastCancellation = new CancellationTokenSource();
+
+        var firstBegin = manager.BeginAsync(cancellationToken: firstCancellation.Token);
+        await connection.BeginTransactionAsyncStarted.Task;
+        var lastBegin = manager.BeginAsync(cancellationToken: lastCancellation.Token);
+
+        firstCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => firstBegin);
+        Assert.False(connection.LastBeginCancellationToken.IsCancellationRequested);
+        Assert.Equal(0, connection.ConnectionDisposeAsyncCount);
+
+        lastCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => lastBegin);
+
+        Assert.True(connection.LastBeginCancellationToken.IsCancellationRequested);
+        Assert.NotEqual(lastCancellation.Token, connection.LastBeginCancellationToken);
+        Assert.Equal(1, connection.ConnectionDisposeAsyncCount);
+        Assert.False(manager.HasCurrent);
+    }
+
+    [Fact]
     public async Task Every_Begin_Returns_A_Distinct_Scope_Over_One_Current_Context()
     {
         var connection = new ControlledDbConnection(initiallyOpen: true);
@@ -167,7 +245,7 @@ public sealed class ManagerIsolationTests
 
         using var failingScope = await manager.BeginAsync();
 
-        var actual = await Assert.ThrowsAsync<IOException>(failingScope.CompleteAsync);
+        var actual = await Assert.ThrowsAsync<IOException>(() => failingScope.CompleteAsync());
 
         Assert.Same(cleanupFailure, actual);
         Assert.True(failingConnection.IsDisposed);

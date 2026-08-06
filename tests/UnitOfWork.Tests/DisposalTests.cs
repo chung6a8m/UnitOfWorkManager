@@ -10,6 +10,65 @@ public class DisposalTests
         new(factory, (_, _) => throw new NotSupportedException());
 
     [Fact]
+    public async Task DisposeAsync_Without_Completion_Explicitly_Rolls_Back()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        var scope = await manager.BeginAsync();
+
+        await scope.DisposeAsync();
+
+        Assert.Equal(1, connection.LastTransaction!.RollbackAsyncCount);
+        Assert.Equal(0, connection.LastTransaction.RollbackSyncCount);
+        Assert.Equal(CancellationToken.None, connection.LastRollbackCancellationToken);
+        Assert.False(manager.HasCurrent);
+    }
+
+    [Fact]
+    public async Task DisposeAsync_Attempts_Transaction_And_Connection_Async_Disposal()
+    {
+        var transactionFailure = new IOException("transaction async dispose failed");
+        var connectionFailure = new IOException("connection async dispose failed");
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            transactionDisposeAsyncException: transactionFailure,
+            connectionDisposeAsyncException: connectionFailure);
+        var scope = await CreateManager(new ControlledConnectionFactory(connection)).BeginAsync();
+
+        var actual = await Assert.ThrowsAsync<AggregateException>(
+            async () => await scope.DisposeAsync());
+
+        Assert.Collection(
+            actual.InnerExceptions,
+            error => Assert.Same(transactionFailure, error),
+            error => Assert.Same(connectionFailure, error));
+        Assert.Equal(1, connection.LastTransaction!.TransactionDisposeAsyncCount);
+        Assert.Equal(0, connection.LastTransaction.DisposeSyncCount);
+        Assert.Equal(1, connection.ConnectionDisposeAsyncCount);
+        Assert.Equal(0, connection.ConnectionDisposeCount);
+    }
+
+    [Fact]
+    public async Task Nested_DisposeAsync_Requests_Rollback_Without_Disposing_Root()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        await using var outer = await manager.BeginAsync();
+        var inner = await manager.BeginAsync();
+
+        await inner.DisposeAsync();
+
+        Assert.True(manager.HasCurrent);
+        Assert.Equal(0, connection.LastTransaction!.RollbackAsyncCount);
+        Assert.Equal(0, connection.ConnectionDisposeAsyncCount);
+
+        await outer.CompleteAsync();
+
+        Assert.Equal(1, connection.LastTransaction.RollbackAsyncCount);
+        Assert.Equal(1, connection.ConnectionDisposeAsyncCount);
+    }
+
+    [Fact]
     public async Task Completed_Scope_Dispose_Is_Idempotent()
     {
         var connection = new ControlledDbConnection(initiallyOpen: true);

@@ -8,6 +8,59 @@ namespace UnitOfWork.Tests;
 public class AsyncAdoNetTests
 {
     [Fact]
+    public async Task BeginAsync_Uses_OpenAsync_And_BeginTransactionAsync()
+    {
+        var connection = new ControlledDbConnection();
+        var manager = new UnitOfWorkManager(
+            new ControlledConnectionFactory(connection),
+            (_, _) => throw new NotSupportedException());
+
+        var begin = manager.BeginAsync();
+        await connection.OpenAsyncStarted.Task;
+        connection.ReleaseOpen();
+        await using var scope = await begin;
+
+        Assert.Equal(1, connection.OpenAsyncCount);
+        Assert.Equal(0, connection.OpenCount);
+        Assert.Equal(1, connection.BeginTransactionAsyncCount);
+        Assert.Equal(0, connection.BeginTransactionCount);
+        Assert.True(connection.LastOpenCancellationToken.CanBeCanceled);
+        Assert.Equal(
+            connection.LastOpenCancellationToken,
+            connection.LastBeginCancellationToken);
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Outermost_Complete_Uses_CommitAsync()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        await using var scope = await new UnitOfWorkManager(
+            new ControlledConnectionFactory(connection),
+            (_, _) => throw new NotSupportedException()).BeginAsync();
+
+        await scope.CompleteAsync();
+
+        Assert.Equal(1, connection.LastTransaction!.CommitAsyncCount);
+        Assert.Equal(0, connection.LastTransaction.CommitSyncCount);
+    }
+
+    [Fact]
+    public async Task Outermost_Rollback_Uses_RollbackAsync()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        await using var scope = await new UnitOfWorkManager(
+            new ControlledConnectionFactory(connection),
+            (_, _) => throw new NotSupportedException()).BeginAsync();
+
+        await scope.RollbackAsync();
+
+        Assert.Equal(1, connection.LastTransaction!.RollbackAsyncCount);
+        Assert.Equal(0, connection.LastTransaction.RollbackSyncCount);
+    }
+
+    [Fact]
     public async Task Open_And_Begin_Use_Async_Provider_APIs()
     {
         var provider = new AsyncOnlyDbConnection();

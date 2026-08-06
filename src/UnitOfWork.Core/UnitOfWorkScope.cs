@@ -5,17 +5,19 @@ namespace UnitOfWork.Core;
 
 internal enum UnitOfWorkScopeState
 {
+    Reserved,
     Active,
     Completed,
     RollbackRequested,
-    Abandoned
+    Abandoned,
+    CanceledBeforeActivation
 }
 
 internal sealed class UnitOfWorkScope : IUnitOfWorkScope
 {
     private readonly RootUnitOfWork _root;
     private readonly object _settlementLock = new();
-    private UnitOfWorkScopeState _state = UnitOfWorkScopeState.Active;
+    private UnitOfWorkScopeState _state = UnitOfWorkScopeState.Reserved;
 
     internal UnitOfWorkScope(RootUnitOfWork root)
     {
@@ -26,15 +28,48 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
 
     public T GetRepository<T>() where T : class => _root.GetRepository<T>();
 
-    public Task CompleteAsync() => SettleAsync(
+    internal void Activate()
+    {
+        lock (_settlementLock)
+        {
+            if (_state != UnitOfWorkScopeState.Reserved)
+            {
+                throw new UnitOfWorkStateException(
+                    "The unit of work scope reservation is no longer active.");
+            }
+
+            _state = UnitOfWorkScopeState.Active;
+        }
+    }
+
+    internal bool TryCancelBeforeActivation()
+    {
+        lock (_settlementLock)
+        {
+            if (_state != UnitOfWorkScopeState.Reserved)
+                return false;
+
+            _state = UnitOfWorkScopeState.CanceledBeforeActivation;
+            return true;
+        }
+    }
+
+    public Task CompleteAsync(CancellationToken cancellationToken = default) => SettleAsync(
         UnitOfWorkScopeState.Completed,
-        UnitOfWorkScopeOutcome.Completed);
+        UnitOfWorkScopeOutcome.Completed,
+        cancellationToken);
 
-    public Task RollbackAsync() => SettleAsync(
+    public Task RollbackAsync(CancellationToken cancellationToken = default) => SettleAsync(
         UnitOfWorkScopeState.RollbackRequested,
-        UnitOfWorkScopeOutcome.RollbackRequested);
+        UnitOfWorkScopeOutcome.RollbackRequested,
+        cancellationToken);
 
-    public void Dispose()
+    public void Dispose() =>
+        DisposeAsync().AsTask().ConfigureAwait(false).GetAwaiter().GetResult();
+
+    public ValueTask DisposeAsync() => new(DisposeAsyncCore());
+
+    private async Task DisposeAsyncCore()
     {
         if (IsSettled())
             return;
@@ -52,10 +87,10 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
             return;
         }
 
-        Func<Task> settle;
+        Func<CancellationToken, Task> settle;
         lock (_settlementLock)
         {
-            if (_state != UnitOfWorkScopeState.Active)
+            if (_state is not UnitOfWorkScopeState.Reserved and not UnitOfWorkScopeState.Active)
                 return;
 
             _state = UnitOfWorkScopeState.Abandoned;
@@ -66,24 +101,22 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
             }
         }
 
-        settle().GetAwaiter().GetResult();
+        await settle(CancellationToken.None).ConfigureAwait(false);
     }
 
-    public ValueTask DisposeAsync()
+    private async Task SettleAsync(
+        UnitOfWorkScopeState settledState,
+        UnitOfWorkScopeOutcome outcome,
+        CancellationToken cancellationToken)
     {
-        Dispose();
-        return ValueTask.CompletedTask;
-    }
-
-    private async Task SettleAsync(UnitOfWorkScopeState settledState, UnitOfWorkScopeOutcome outcome)
-    {
+        cancellationToken.ThrowIfCancellationRequested();
         ThrowIfSettled();
         _root.EnsureUsable();
 
-        Func<Task> settle;
+        Func<CancellationToken, Task> settle;
         lock (_settlementLock)
         {
-            if (_state != UnitOfWorkScopeState.Active)
+            if (_state is not UnitOfWorkScopeState.Reserved and not UnitOfWorkScopeState.Active)
                 throw AlreadySettledException();
 
             _state = settledState;
@@ -94,13 +127,16 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
             }
         }
 
-        await settle();
+        await settle(cancellationToken).ConfigureAwait(false);
     }
 
     private bool IsSettled()
     {
         lock (_settlementLock)
-            return _state != UnitOfWorkScopeState.Active;
+        {
+            return _state is not UnitOfWorkScopeState.Reserved
+                and not UnitOfWorkScopeState.Active;
+        }
     }
 
     private void ThrowIfSettled()

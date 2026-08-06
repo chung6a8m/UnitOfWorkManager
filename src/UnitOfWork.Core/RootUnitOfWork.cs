@@ -18,6 +18,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
     private readonly Func<bool> _isCurrentRoot;
     private readonly Action _onRootFinished;
     private readonly object _lifecycleLock = new();
+    private readonly CancellationTokenSource _initializationCancellation = new();
 
     private DbTransaction? _transaction;
     private DbConnection? _boundConnection;
@@ -27,6 +28,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
     private int _lifecycleState = (int)UnitOfWorkLifecycleState.Initializing;
     private int _completionOutcome = (int)UnitOfWorkCompletionOutcome.None;
     private int _operationInProgress;
+    private int _initializationCancellationRequested;
     private string? _activeOperationName;
 
     internal RootUnitOfWork(
@@ -63,6 +65,8 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
     }
     internal DbTransaction? Transaction => _transaction;
     internal bool HasActiveOperation => Volatile.Read(ref _operationInProgress) != 0;
+    internal bool InitializationCancellationRequested =>
+        Volatile.Read(ref _initializationCancellationRequested) != 0;
     internal string? ActiveOperationName => Volatile.Read(ref _activeOperationName);
 
     DbConnection IUnitOfWorkContext.Connection => Connection;
@@ -76,6 +80,9 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
             var state = LifecycleState;
             if (state is not UnitOfWorkLifecycleState.Initializing and not UnitOfWorkLifecycleState.Active)
                 throw new UnitOfWorkStateException("The unit of work root is no longer accepting scopes.");
+
+            if (InitializationCancellationRequested)
+                throw new UnitOfWorkStateException("The unit of work root initialization was canceled.");
 
             Interlocked.Increment(ref _activeScopeCount);
             return new UnitOfWorkScope(this);
@@ -107,12 +114,15 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         try
         {
             if (_connection.State != ConnectionState.Open)
-                await _connection.OpenAsync();
+            {
+                await _connection.OpenAsync(_initializationCancellation.Token)
+                    .ConfigureAwait(false);
+            }
 
             _transaction = await _transactionFactory.BeginTransactionAsync(
                 _connection,
                 Options,
-                CancellationToken.None);
+                _initializationCancellation.Token).ConfigureAwait(false);
             _boundConnection = new TransactionBoundDbConnection(this);
             Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Active);
             completion.TrySetResult();
@@ -124,7 +134,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
 
             try
             {
-                DisposeResources();
+                await DisposeResourcesAsync().ConfigureAwait(false);
             }
             catch (Exception cleanupError)
             {
@@ -146,7 +156,37 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         }
     }
 
-    internal bool TrySettleScope(UnitOfWorkScopeOutcome outcome, out Func<Task> settle)
+    internal void CancelScopeBeforeActivation(UnitOfWorkScope scope)
+    {
+        var cancelInitialization = false;
+
+        lock (_lifecycleLock)
+        {
+            if (!scope.TryCancelBeforeActivation())
+                return;
+
+            var activeScopeCount = Volatile.Read(ref _activeScopeCount);
+            if (activeScopeCount <= 0)
+            {
+                throw new UnitOfWorkStateException(
+                    "A unit of work scope reservation was released more than once.");
+            }
+
+            var remainingScopes = Interlocked.Decrement(ref _activeScopeCount);
+            if (remainingScopes == 0 && LifecycleState == UnitOfWorkLifecycleState.Initializing)
+            {
+                Volatile.Write(ref _initializationCancellationRequested, 1);
+                cancelInitialization = true;
+            }
+        }
+
+        if (cancelInitialization)
+            _initializationCancellation.Cancel();
+    }
+
+    internal bool TrySettleScope(
+        UnitOfWorkScopeOutcome outcome,
+        out Func<CancellationToken, Task> settle)
     {
         lock (_lifecycleLock)
         {
@@ -162,7 +202,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
 
                 if (HasActiveOperation)
                 {
-                    settle = static () => Task.CompletedTask;
+                    settle = static _ => Task.CompletedTask;
                     return false;
                 }
             }
@@ -173,15 +213,18 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
             var remainingScopes = Interlocked.Decrement(ref _activeScopeCount);
             if (remainingScopes != 0)
             {
-                settle = static () => Task.CompletedTask;
+                settle = static _ => Task.CompletedTask;
                 return true;
             }
 
             Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Finalizing);
-        }
 
-        settle = FinalizeAsync;
-        return true;
+            var requestedOutcome = RollbackRequested
+                ? UnitOfWorkCompletionOutcome.RolledBack
+                : UnitOfWorkCompletionOutcome.Committed;
+            settle = cancellationToken => FinalizeAsync(requestedOutcome, cancellationToken);
+            return true;
+        }
     }
 
     internal UnitOfWorkOperationLease EnterOperation(string operationName)
@@ -261,24 +304,28 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         ?? throw new UnitOfWorkStateException("The unit of work transaction has not been initialized."))
         .IsolationLevel;
 
-    private Task FinalizeAsync()
+    private async Task FinalizeAsync(
+        UnitOfWorkCompletionOutcome requestedOutcome,
+        CancellationToken cancellationToken)
     {
+        Exception? primaryError = null;
+
         try
         {
-            var outcome = RollbackRequested
-                ? UnitOfWorkCompletionOutcome.RolledBack
-                : UnitOfWorkCompletionOutcome.Committed;
-
-            if (outcome == UnitOfWorkCompletionOutcome.RolledBack)
-                _transaction?.Rollback();
+            if (requestedOutcome == UnitOfWorkCompletionOutcome.RolledBack)
+            {
+                await _transaction!.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            }
             else
-                _transaction?.Commit();
+            {
+                await _transaction!.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
 
-            Volatile.Write(ref _completionOutcome, (int)outcome);
-            Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Disposed);
+            Volatile.Write(ref _completionOutcome, (int)requestedOutcome);
         }
-        catch
+        catch (Exception error)
         {
+            primaryError = error;
             Volatile.Write(ref _completionOutcome, (int)UnitOfWorkCompletionOutcome.Faulted);
             Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Faulted);
             throw;
@@ -287,15 +334,28 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         {
             try
             {
-                DisposeResources();
+                await DisposeResourcesAsync().ConfigureAwait(false);
+                if (primaryError is null)
+                {
+                    Volatile.Write(
+                        ref _lifecycleState,
+                        (int)UnitOfWorkLifecycleState.Disposed);
+                }
+            }
+            catch (Exception cleanupError) when (primaryError is not null)
+            {
+                AddCleanupException(primaryError, cleanupError);
+            }
+            catch
+            {
+                Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Faulted);
+                throw;
             }
             finally
             {
                 _onRootFinished();
             }
         }
-
-        return Task.CompletedTask;
     }
 
     private static void AddCleanupException(Exception primaryException, Exception cleanupException)
@@ -311,14 +371,15 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         primaryException.Data[CleanupExceptionDataKey] = cleanupException;
     }
 
-    private void DisposeResources()
+    private async Task DisposeResourcesAsync()
     {
         Exception? transactionError = null;
         Exception? connectionError = null;
 
         try
         {
-            _transaction?.Dispose();
+            if (_transaction is not null)
+                await _transaction.DisposeAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -327,7 +388,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
 
         try
         {
-            _connection.Dispose();
+            await _connection.DisposeAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {

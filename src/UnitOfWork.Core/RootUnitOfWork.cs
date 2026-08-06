@@ -334,8 +334,16 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
                 return (T)existing;
 
             var created = _repositoryFactory(type, ConnectionNoCheck);
-            _repositories.Add(type, created);
-            return (T)created;
+            if (created is not T repository)
+            {
+                var actualType = created?.GetType().FullName ?? "null";
+                throw new InvalidOperationException(
+                    $"The repository factory returned '{actualType}' for requested repository type " +
+                    $"'{type.FullName}', but a non-null assignable instance was required.");
+            }
+
+            _repositories.Add(type, repository);
+            return repository;
         }
     }
 

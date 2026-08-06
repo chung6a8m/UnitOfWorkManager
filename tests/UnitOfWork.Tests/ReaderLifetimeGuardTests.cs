@@ -212,6 +212,147 @@ public class ReaderLifetimeGuardTests
     }
 
     [Fact]
+    public async Task CloseAsync_Uses_Provider_Async_API_And_Releases_Lease_Once()
+    {
+        var reader = new ControlledDbDataReader { ThrowOnSynchronousApis = true };
+        var manager = CreateManager(reader);
+        await using var scope = await manager.BeginAsync();
+        await using var command = scope.Connection.CreateCommand();
+        await using var overlappingCommand = scope.Connection.CreateCommand();
+
+        var wrappedReader = await command.ExecuteReaderAsync();
+        await wrappedReader.CloseAsync();
+        await wrappedReader.CloseAsync();
+
+        Assert.Equal(0, reader.CloseCount);
+        Assert.Equal(1, reader.CloseAsyncCount);
+        await overlappingCommand.ExecuteScalarAsync();
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task CloseAsync_Releases_Lease_Once_When_Provider_CloseAsync_Fails()
+    {
+        var reader = new ControlledDbDataReader(
+            closeAsyncException: new InvalidOperationException("async close failed"))
+        {
+            ThrowOnSynchronousApis = true
+        };
+        var manager = CreateManager(reader);
+        await using var scope = await manager.BeginAsync();
+        await using var command = scope.Connection.CreateCommand();
+        await using var overlappingCommand = scope.Connection.CreateCommand();
+
+        var wrappedReader = await command.ExecuteReaderAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => wrappedReader.CloseAsync());
+        await wrappedReader.CloseAsync();
+
+        Assert.Equal(0, reader.CloseCount);
+        Assert.Equal(1, reader.CloseAsyncCount);
+        await overlappingCommand.ExecuteScalarAsync();
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task GetFieldValueAsync_Uses_Provider_Async_API_And_Keeps_Lease()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var reader = new ControlledDbDataReader { ThrowOnSynchronousApis = true };
+        var manager = CreateManager(reader);
+        await using var scope = await manager.BeginAsync();
+        await using var command = scope.Connection.CreateCommand();
+        await using var overlappingCommand = scope.Connection.CreateCommand();
+        await using var wrappedReader = await command.ExecuteReaderAsync();
+
+        var result = await wrappedReader.GetFieldValueAsync<int>(0, cancellation.Token);
+
+        Assert.Equal(37, result);
+        Assert.Equal(1, reader.GetFieldValueAsyncCount);
+        Assert.Equal(0, reader.LastGetFieldValueOrdinal);
+        Assert.Equal(cancellation.Token, reader.LastGetFieldValueCancellationToken);
+        await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(
+            () => overlappingCommand.ExecuteScalarAsync());
+
+        await wrappedReader.DisposeAsync();
+        await overlappingCommand.ExecuteScalarAsync();
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task IsDBNullAsync_Uses_Provider_Async_API_And_Keeps_Lease()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var reader = new ControlledDbDataReader { ThrowOnSynchronousApis = true };
+        var manager = CreateManager(reader);
+        await using var scope = await manager.BeginAsync();
+        await using var command = scope.Connection.CreateCommand();
+        await using var overlappingCommand = scope.Connection.CreateCommand();
+        await using var wrappedReader = await command.ExecuteReaderAsync();
+
+        var result = await wrappedReader.IsDBNullAsync(0, cancellation.Token);
+
+        Assert.True(result);
+        Assert.Equal(1, reader.IsDBNullAsyncCount);
+        Assert.Equal(0, reader.LastIsDBNullOrdinal);
+        Assert.Equal(cancellation.Token, reader.LastIsDBNullCancellationToken);
+        await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(
+            () => overlappingCommand.ExecuteScalarAsync());
+
+        await wrappedReader.DisposeAsync();
+        await overlappingCommand.ExecuteScalarAsync();
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task GetSchemaTableAsync_Uses_Provider_Async_API_And_Keeps_Lease()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var reader = new ControlledDbDataReader { ThrowOnSynchronousApis = true };
+        var manager = CreateManager(reader);
+        await using var scope = await manager.BeginAsync();
+        await using var command = scope.Connection.CreateCommand();
+        await using var overlappingCommand = scope.Connection.CreateCommand();
+        await using var wrappedReader = await command.ExecuteReaderAsync();
+
+        var result = await wrappedReader.GetSchemaTableAsync(cancellation.Token);
+
+        Assert.Same(reader.SchemaTableAsyncResult, result);
+        Assert.Equal(1, reader.GetSchemaTableAsyncCount);
+        Assert.Equal(cancellation.Token, reader.LastGetSchemaTableCancellationToken);
+        await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(
+            () => overlappingCommand.ExecuteScalarAsync());
+
+        await wrappedReader.DisposeAsync();
+        await overlappingCommand.ExecuteScalarAsync();
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task GetColumnSchemaAsync_Uses_Provider_Async_API_And_Keeps_Lease()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var reader = new ControlledDbDataReader { ThrowOnSynchronousApis = true };
+        var manager = CreateManager(reader);
+        await using var scope = await manager.BeginAsync();
+        await using var command = scope.Connection.CreateCommand();
+        await using var overlappingCommand = scope.Connection.CreateCommand();
+        await using var wrappedReader = await command.ExecuteReaderAsync();
+
+        var result = await wrappedReader.GetColumnSchemaAsync(cancellation.Token);
+
+        Assert.Same(reader.ColumnSchemaAsyncResult, result);
+        Assert.Equal(1, reader.GetColumnSchemaAsyncCount);
+        Assert.Equal(cancellation.Token, reader.LastGetColumnSchemaCancellationToken);
+        await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(
+            () => overlappingCommand.ExecuteScalarAsync());
+
+        await wrappedReader.DisposeAsync();
+        await overlappingCommand.ExecuteScalarAsync();
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
     public async Task Completion_While_Reader_Is_Open_Is_Rejected_Without_Settling_Scope()
     {
         var reader = new ControlledDbDataReader();

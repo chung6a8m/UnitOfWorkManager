@@ -148,6 +148,48 @@ public class RepositoryCacheConcurrencyTests
     }
 
     [Fact]
+    public async Task Repository_Factory_Wrong_Type_Is_Not_Cached_And_Can_Be_Retried()
+    {
+        var factoryCalls = 0;
+        var successfulRepository = new Repository();
+        var (manager, scopeTask) = Begin((_, _) =>
+            Interlocked.Increment(ref factoryCalls) == 1
+                ? new object()
+                : successfulRepository);
+        var scope = await scopeTask;
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => manager.Current.GetRepository<IRepository>());
+
+        Assert.Contains(typeof(IRepository).FullName!, exception.Message);
+        Assert.Same(successfulRepository, manager.Current.GetRepository<IRepository>());
+        Assert.Equal(2, Volatile.Read(ref factoryCalls));
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Repository_Factory_Null_Is_Not_Cached_And_Can_Be_Retried()
+    {
+        var factoryCalls = 0;
+        var successfulRepository = new Repository();
+        var (manager, scopeTask) = Begin((_, _) =>
+            Interlocked.Increment(ref factoryCalls) == 1
+                ? null!
+                : successfulRepository);
+        var scope = await scopeTask;
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => manager.Current.GetRepository<IRepository>());
+
+        Assert.Contains(typeof(IRepository).FullName!, exception.Message);
+        Assert.Same(successfulRepository, manager.Current.GetRepository<IRepository>());
+        Assert.Equal(2, Volatile.Read(ref factoryCalls));
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
     public async Task GetRepository_During_Finalization_Is_Rejected()
     {
         var factoryCalls = 0;

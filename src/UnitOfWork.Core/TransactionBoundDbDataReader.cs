@@ -1,4 +1,6 @@
 using System.Collections;
+using System.Collections.ObjectModel;
+using System.Data;
 using System.Data.Common;
 
 namespace UnitOfWork.Core;
@@ -33,6 +35,21 @@ public sealed class TransactionBoundDbDataReader : DbDataReader
         try
         {
             _inner.Close();
+        }
+        finally
+        {
+            ReleaseLease();
+        }
+    }
+
+    public override async Task CloseAsync()
+    {
+        if (Interlocked.Exchange(ref _closed, 1) != 0)
+            return;
+
+        try
+        {
+            await _inner.CloseAsync().ConfigureAwait(false);
         }
         finally
         {
@@ -83,6 +100,8 @@ public sealed class TransactionBoundDbDataReader : DbDataReader
     public override double GetDouble(int ordinal) => _inner.GetDouble(ordinal);
     public override IEnumerator GetEnumerator() => ((IEnumerable)_inner).GetEnumerator();
     public override Type GetFieldType(int ordinal) => _inner.GetFieldType(ordinal);
+    public override Task<T> GetFieldValueAsync<T>(int ordinal, CancellationToken cancellationToken) =>
+        _inner.GetFieldValueAsync<T>(ordinal, cancellationToken);
     public override float GetFloat(int ordinal) => _inner.GetFloat(ordinal);
     public override Guid GetGuid(int ordinal) => _inner.GetGuid(ordinal);
     public override short GetInt16(int ordinal) => _inner.GetInt16(ordinal);
@@ -94,6 +113,13 @@ public sealed class TransactionBoundDbDataReader : DbDataReader
     public override object GetValue(int ordinal) => _inner.GetValue(ordinal);
     public override int GetValues(object[] values) => _inner.GetValues(values);
     public override bool IsDBNull(int ordinal) => _inner.IsDBNull(ordinal);
+    public override Task<bool> IsDBNullAsync(int ordinal, CancellationToken cancellationToken) =>
+        _inner.IsDBNullAsync(ordinal, cancellationToken);
+    public override Task<DataTable?> GetSchemaTableAsync(CancellationToken cancellationToken = default) =>
+        _inner.GetSchemaTableAsync(cancellationToken);
+    public override Task<ReadOnlyCollection<DbColumn>> GetColumnSchemaAsync(
+        CancellationToken cancellationToken = default) =>
+        _inner.GetColumnSchemaAsync(cancellationToken);
     public override bool NextResult() => _inner.NextResult();
     public override Task<bool> NextResultAsync(CancellationToken cancellationToken) =>
         _inner.NextResultAsync(cancellationToken);

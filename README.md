@@ -135,8 +135,9 @@ dịch read-only/timeout sang API riêng của provider.
 |---|---|---|
 | Command bị cancel/lỗi trước completion | Operation lease được release; scope còn active và có thể `RollbackAsync()` | Có thể retry command theo policy ứng dụng nếu provider cho phép |
 | Reader creation bị cancel/lỗi | Lease được release; scope còn active | Có thể rollback hoặc thử reader/command khác tuần tự |
-| `CompleteAsync` bị cancel/lỗi | Root faulted/finalized; không được retry completion | Không retry trên cùng scope/root; bắt đầu UoW mới |
-| `RollbackAsync` bị cancel/lỗi | Root faulted/finalized; không được retry rollback | Không retry trên cùng scope/root; bắt đầu UoW mới |
+| Token đã bị cancel trước khi gọi `CompleteAsync` / `RollbackAsync` | Ném cancellation trước khi đổi scope/root; scope và root vẫn active | Có thể gọi lại trên cùng scope với token còn hiệu lực |
+| `CompleteAsync` bị cancel/lỗi sau khi finalization bắt đầu | Root faulted/finalized; không được retry completion | Không retry trên cùng scope/root; bắt đầu UoW mới |
+| `RollbackAsync` bị cancel/lỗi sau khi finalization bắt đầu | Root faulted/finalized; không được retry rollback | Không retry trên cùng scope/root; bắt đầu UoW mới |
 | Cleanup lỗi sau commit thành công | Commit outcome vẫn được giữ; ambient luôn bị clear | Không retry commit; quyết định recovery ngoài UoW |
 | `DisposeAsync()` khi chưa complete | Rollback async rõ ràng trước khi dispose resource | Không dùng lại scope/root |
 

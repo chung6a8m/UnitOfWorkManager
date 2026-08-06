@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>UnitOfWork.Sample.WebApi.MinimalApi</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="RepoDb" Version="1.15.1" />
+    <PackageReference Include="RepoDb.Sqlite.Microsoft" Version="1.15.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\UnitOfWork.Core\UnitOfWork.Core.csproj" />
+  </ItemGroup>
+
+</Project>

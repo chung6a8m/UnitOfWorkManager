@@ -1,0 +1,29 @@
+@UnitOfWork_Sample_RepoDb_HostAddress = http://localhost:5000
+
+GET {{UnitOfWork_Sample_RepoDb_HostAddress}}/api/counters
+Accept: application/json
+
+###
+
+POST {{UnitOfWork_Sample_RepoDb_HostAddress}}/api/counters/commit
+Content-Type: application/json
+
+{
+  "outerValue": 10,
+  "innerValue": 20
+}
+
+###
+
+POST {{UnitOfWork_Sample_RepoDb_HostAddress}}/api/counters/rollback
+Content-Type: application/json
+
+{
+  "outerValue": 30,
+  "innerValue": 40
+}
+
+###
+
+GET {{UnitOfWork_Sample_RepoDb_HostAddress}}/api/counters/diagnostics
+Accept: application/json

@@ -2,11 +2,13 @@
   <Folder Name="/samples/">
     <Project Path="samples/UnitOfWork.Sample.Console/UnitOfWork.Sample.Console.csproj" />
     <Project Path="samples/UnitOfWork.Sample.WebApi.Controllers/UnitOfWork.Sample.WebApi.Controllers.csproj" />
+    <Project Path="samples/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/UnitOfWork.Core/UnitOfWork.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb.Tests/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb.Tests.csproj" />
     <Project Path="tests/UnitOfWork.Sample.WebApi.Tests/UnitOfWork.Sample.WebApi.Tests.csproj" />
     <Project Path="tests/UnitOfWork.Tests/UnitOfWork.Tests.csproj" />
   </Folder>

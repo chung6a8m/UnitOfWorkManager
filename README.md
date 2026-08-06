@@ -1,33 +1,50 @@
 # UnitOfWork.Core
 
-Thư viện mẫu triển khai Unit of Work trên `IDbConnection`/`IDbTransaction` với:
+Thư viện mẫu triển khai Unit of Work trên `IDbConnection`/`IDbTransaction`.
 
-- ref-counting cho các lời gọi `BeginAsync()` lồng nhau;
-- rollback lan truyền từ tầng trong ra transaction ngoài cùng;
-- guard theo logical flow bằng `AsyncLocal`;
-- fail-fast khi hai thao tác dùng chung một UoW đồng thời;
-- connection/command wrapper để repository và Dapper đi qua cùng guard.
+## Contract giao dịch P0
 
-## Cơ chế ambient UnitOfWork
+`UnitOfWorkManager.BeginAsync()` trả về một `IUnitOfWorkScope` riêng biệt cho
+mỗi lần gọi, kể cả khi begin được lồng nhau. Các scope đó là những lease độc lập
+trên cùng một root transaction và repository cache khi chúng thuộc cùng manager
+và execution context. Begin lồng nhau không trả lại cùng một owner/scope.
 
-`UnitOfWorkManager` giữ current UoW trong một mutable holder nằm trong
-`AsyncLocal`. `BeginAsync()` gắn holder trong execution context của caller trước
-khi bắt đầu phần khởi tạo transaction bất đồng bộ. Cách này bảo đảm:
+- `CompleteAsync()` chỉ đánh dấu scope hiện tại là thành công và finalizes scope
+  đó đúng một lần; nó không tự commit root transaction khi vẫn còn scope khác.
+- Dispose một scope chưa complete sẽ yêu cầu rollback root transaction. Do đó,
+  một scope trong incomplete vẫn làm outer scope rollback khi root được settle.
+- Dispose scope trong không sở hữu, dispose, hoặc giải phóng raw root connection
+  hay transaction; chỉ root finalization mới làm việc đó.
+- `manager.Current` là context view (`IUnitOfWorkContext`) của root hiện tại,
+  không phải ownership lease và không phải scope đã được begin trả về.
+- Manager tự động xóa current context sau khi root được finalize, sau lỗi khởi
+  tạo, và sau cleanup/finalization failure. Không gọi `ClearCurrent()` thủ công.
+- Connection được cung cấp cho context bị ràng buộc vào transaction root.
+  Command tạo từ connection đó tự enlist vào transaction, vì vậy repository và
+  Dapper không được gán `command.Transaction` thủ công.
+- Ambient root được cô lập theo từng `UnitOfWorkManager`; hai manager không chia
+  sẻ current root, transaction, hay repository cache.
 
-- caller nhìn thấy `Current` ngay sau khi `await BeginAsync()`;
-- Begin lồng nhau dùng lại cùng UoW và cùng chờ transaction đang khởi tạo;
-- lỗi mở connection/transaction dispose tài nguyên và xóa ambient state ở cả
-  execution context của helper lẫn caller.
+Mẫu dùng cơ bản:
 
-Public API của `IUnitOfWork` và `IUnitOfWorkManager` không phụ thuộc vào chi tiết
-holder này.
+```csharp
+using var scope = await manager.BeginAsync();
 
-## Ref-counting và rollback
+// Thực hiện repository/Dapper work qua scope hoặc manager.Current.
 
-Mỗi UoW bắt đầu với ref-count bằng 1. Begin lồng nhau tăng ref-count; commit hoặc
-rollback ở tầng trong chỉ giảm ref-count. Transaction thật chỉ kết thúc khi tầng
-ngoài cùng đưa ref-count về 0. Một rollback ở bất kỳ tầng nào đặt cờ rollback cho
-toàn bộ UoW, nên commit ngoài cùng sau đó vẫn rollback transaction.
+await scope.CompleteAsync();
+```
+
+## Migration từ API cũ
+
+| Before | After |
+|---|---|
+| `IUnitOfWork` | `IUnitOfWorkScope` / `IUnitOfWorkContext` |
+| `CommitAsync()` | `CompleteAsync()` |
+| dispose + `ClearCurrent()` | `using var scope = await BeginAsync()` |
+| factory `(type, connection, transaction)` | `(type, connection)` |
+| `command.Transaction = transaction` | xóa assignment |
+| nested begin trả cùng owner | nested begin trả distinct lease |
 
 ## Test integration SQLite
 
@@ -48,32 +65,30 @@ triển cụ thể.
 
 ```text
 src/UnitOfWork.Core/
-  UnitOfWork.cs
+  IUnitOfWorkContext.cs
+  IUnitOfWorkScope.cs
+  RootUnitOfWork.cs
   UnitOfWorkManager.cs
-  GuardedDbConnection.cs
-  GuardedDbCommand.cs
-  Exceptions/UnitOfWorkConcurrencyException.cs
+  UnitOfWorkScope.cs
 
 tests/UnitOfWork.Tests/
-  RefCountingTests.cs
-  CommitRollbackIntegrationTests.cs
-  ConcurrencyGuardTests.cs
-  AsyncFlowIsolationTests.cs
-  DisposalTests.cs
-  UnitOfWorkManagerAmbientTests.cs
-  SqliteTestDbTests.cs
+  ScopeLifecycleTests.cs
+  TransactionInvariantTests.cs
+  ManagerIsolationTests.cs
 ```
 
-## Chạy build và test
+## Chạy build, test và kiểm tra invariant
 
 Yêu cầu .NET 8 SDK trở lên:
 
 ```powershell
 dotnet restore UnitOfWork.slnx
 dotnet build UnitOfWork.slnx --no-restore --warnaserror
-dotnet test UnitOfWork.slnx --no-restore
+dotnet test UnitOfWork.slnx --no-build --logger "console;verbosity=normal"
 ```
 
-Test project tắt xUnit parallelization vì ambient state là static và được phân
-tách theo execution context. `UnitOfWorkTestBase` luôn reset state này sau mỗi
-test, kể cả khi test thất bại.
+Để chạy đầy đủ các kiểm tra P0, bao gồm quét các pattern API cũ:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/verify-p0-transaction-invariants.ps1
+```

@@ -23,12 +23,16 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
     private DbTransaction? _transaction;
     private DbConnection? _boundConnection;
     private Task? _initializationTask;
+    private Task? _canceledScopeCleanupTask;
     private int _activeScopeCount;
     private int _rollbackRequested;
     private int _lifecycleState = (int)UnitOfWorkLifecycleState.Initializing;
     private int _completionOutcome = (int)UnitOfWorkCompletionOutcome.None;
     private int _operationInProgress;
     private int _initializationCancellationRequested;
+    private bool _initializationCancellationUseInProgress;
+    private bool _initializationCancellationDisposeRequested;
+    private bool _initializationCancellationDisposed;
     private string? _activeOperationName;
 
     internal RootUnitOfWork(
@@ -117,15 +121,25 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
             {
                 await _connection.OpenAsync(_initializationCancellation.Token)
                     .ConfigureAwait(false);
+                _initializationCancellation.Token.ThrowIfCancellationRequested();
             }
 
             _transaction = await _transactionFactory.BeginTransactionAsync(
                 _connection,
                 Options,
                 _initializationCancellation.Token).ConfigureAwait(false);
-            _boundConnection = new TransactionBoundDbConnection(this);
-            Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Active);
-            completion.TrySetResult();
+            _initializationCancellation.Token.ThrowIfCancellationRequested();
+
+            lock (_lifecycleLock)
+            {
+                _initializationCancellation.Token.ThrowIfCancellationRequested();
+                if (InitializationCancellationRequested)
+                    throw new OperationCanceledException(_initializationCancellation.Token);
+
+                _boundConnection = new TransactionBoundDbConnection(this);
+                Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Active);
+                completion.TrySetResult();
+            }
         }
         catch (Exception initializationError)
         {
@@ -150,6 +164,10 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
                 {
                     AddCleanupException(initializationError, cleanupError);
                 }
+                finally
+                {
+                    DisposeInitializationCancellationWhenSafe();
+                }
             }
 
             completion.TrySetException(initializationError);
@@ -159,6 +177,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
     internal void CancelScopeBeforeActivation(UnitOfWorkScope scope)
     {
         var cancelInitialization = false;
+        TaskCompletionSource? canceledScopeCleanup = null;
 
         lock (_lifecycleLock)
         {
@@ -176,12 +195,53 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
             if (remainingScopes == 0 && LifecycleState == UnitOfWorkLifecycleState.Initializing)
             {
                 Volatile.Write(ref _initializationCancellationRequested, 1);
+                _initializationCancellationUseInProgress = true;
                 cancelInitialization = true;
+            }
+            else if (remainingScopes == 0 && LifecycleState == UnitOfWorkLifecycleState.Active)
+            {
+                Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Finalizing);
+                canceledScopeCleanup = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _canceledScopeCleanupTask = canceledScopeCleanup.Task;
             }
         }
 
         if (cancelInitialization)
-            _initializationCancellation.Cancel();
+        {
+            try
+            {
+                _initializationCancellation.Cancel();
+            }
+            finally
+            {
+                ReleaseInitializationCancellationUse();
+            }
+        }
+
+        if (canceledScopeCleanup is not null)
+            _ = FinalizeCanceledScopeAsync(canceledScopeCleanup);
+    }
+
+    internal Task WaitForCanceledScopeCleanupAsync()
+    {
+        lock (_lifecycleLock)
+            return _canceledScopeCleanupTask ?? _initializationTask ?? Task.CompletedTask;
+    }
+
+    private async Task FinalizeCanceledScopeAsync(TaskCompletionSource completion)
+    {
+        try
+        {
+            await FinalizeAsync(
+                UnitOfWorkCompletionOutcome.RolledBack,
+                CancellationToken.None).ConfigureAwait(false);
+            completion.TrySetResult();
+        }
+        catch (Exception error)
+        {
+            completion.TrySetException(error);
+        }
     }
 
     internal bool TrySettleScope(
@@ -353,9 +413,54 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
             }
             finally
             {
-                _onRootFinished();
+                try
+                {
+                    _onRootFinished();
+                }
+                finally
+                {
+                    DisposeInitializationCancellationWhenSafe();
+                }
             }
         }
+    }
+
+    private void DisposeInitializationCancellationWhenSafe()
+    {
+        var dispose = false;
+
+        lock (_lifecycleLock)
+        {
+            _initializationCancellationDisposeRequested = true;
+            if (!_initializationCancellationUseInProgress &&
+                !_initializationCancellationDisposed)
+            {
+                _initializationCancellationDisposed = true;
+                dispose = true;
+            }
+        }
+
+        if (dispose)
+            _initializationCancellation.Dispose();
+    }
+
+    private void ReleaseInitializationCancellationUse()
+    {
+        var dispose = false;
+
+        lock (_lifecycleLock)
+        {
+            _initializationCancellationUseInProgress = false;
+            if (_initializationCancellationDisposeRequested &&
+                !_initializationCancellationDisposed)
+            {
+                _initializationCancellationDisposed = true;
+                dispose = true;
+            }
+        }
+
+        if (dispose)
+            _initializationCancellation.Dispose();
     }
 
     private static void AddCleanupException(Exception primaryException, Exception cleanupException)

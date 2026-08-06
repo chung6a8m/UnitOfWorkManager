@@ -134,17 +134,15 @@ public class UnitOfWorkManager : IUnitOfWorkManager
         {
             root.CancelScopeBeforeActivation(scope);
 
-            if (error is OperationCanceledException &&
-                cancellationToken.IsCancellationRequested &&
-                root.InitializationCancellationRequested)
+            if (root.ActiveScopeCount == 0)
             {
                 try
                 {
-                    await initialization.ConfigureAwait(false);
+                    await root.WaitForCanceledScopeCleanupAsync().ConfigureAwait(false);
                 }
                 catch
                 {
-                    // Preserve the caller's cancellation after root cleanup completes.
+                    // Preserve the original wait/initialization error after cleanup completes.
                 }
             }
 

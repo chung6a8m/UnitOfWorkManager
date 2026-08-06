@@ -93,6 +93,39 @@ public sealed class ManagerIsolationTests
     }
 
     [Fact]
+    public async Task Last_Canceled_Wait_When_Begin_Ignores_Cancellation_Cleans_Root()
+    {
+        var canceledConnection = new ControlledDbConnection(
+            initiallyOpen: true,
+            blockBeginTransactionAsync: true,
+            ignoreBeginTransactionAsyncCancellation: true);
+        var freshConnection = new ControlledDbConnection(initiallyOpen: true);
+        var factory = new ControlledConnectionFactory(canceledConnection, freshConnection);
+        var manager = CreateManager(factory);
+        using var cancellation = new CancellationTokenSource();
+
+        var canceledBegin = manager.BeginAsync(cancellationToken: cancellation.Token);
+        await canceledConnection.BeginTransactionAsyncStarted.Task;
+        var initializationToken = canceledConnection.LastBeginCancellationToken;
+        _ = initializationToken.WaitHandle;
+        cancellation.Cancel();
+        await canceledConnection.BeginTransactionAsyncCancellationObserved.Task;
+        canceledConnection.ReleaseBeginTransactionAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledBegin);
+        Assert.NotNull(canceledConnection.LastTransaction);
+        Assert.Equal(1, canceledConnection.TransactionDisposeAsyncCount);
+        Assert.Equal(1, canceledConnection.ConnectionDisposeAsyncCount);
+        Assert.False(manager.HasCurrent);
+        Assert.Throws<ObjectDisposedException>(() => initializationToken.WaitHandle);
+
+        await using var freshScope = await manager.BeginAsync();
+        Assert.Equal(2, factory.CreateCount);
+        Assert.Same(freshScope.Connection, manager.Current.Connection);
+        await freshScope.RollbackAsync();
+    }
+
+    [Fact]
     public async Task Every_Begin_Returns_A_Distinct_Scope_Over_One_Current_Context()
     {
         var connection = new ControlledDbConnection(initiallyOpen: true);

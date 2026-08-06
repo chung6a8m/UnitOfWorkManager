@@ -61,6 +61,21 @@ public class AsyncAdoNetTests
     }
 
     [Fact]
+    public async Task Root_Finalization_Disposes_Initialization_Cancellation_Source()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        await using var scope = await new UnitOfWorkManager(
+            new ControlledConnectionFactory(connection),
+            (_, _) => throw new NotSupportedException()).BeginAsync();
+        var initializationToken = connection.LastBeginCancellationToken;
+        _ = initializationToken.WaitHandle;
+
+        await scope.RollbackAsync();
+
+        Assert.Throws<ObjectDisposedException>(() => initializationToken.WaitHandle);
+    }
+
+    [Fact]
     public async Task Open_And_Begin_Use_Async_Provider_APIs()
     {
         var provider = new AsyncOnlyDbConnection();

@@ -45,6 +45,7 @@ internal sealed class ControlledDbConnection : DbConnection
     private readonly bool _blockCommitAsync;
     private readonly bool _blockRollbackAsync;
     private readonly bool _blockTransactionDisposeAsync;
+    private readonly bool _ignoreBeginTransactionAsyncCancellation;
     private readonly Func<DbConnection, DbCommand>? _commandFactory;
     private ConnectionState _state;
 
@@ -66,7 +67,8 @@ internal sealed class ControlledDbConnection : DbConnection
         bool blockCommitAsync = false,
         bool blockRollbackAsync = false,
         bool blockTransactionDisposeAsync = false,
-        bool blockConnectionDisposeAsync = false)
+        bool blockConnectionDisposeAsync = false,
+        bool ignoreBeginTransactionAsyncCancellation = false)
     {
         _state = initiallyOpen ? ConnectionState.Open : ConnectionState.Closed;
         _beginTransactionException = beginTransactionException;
@@ -84,6 +86,7 @@ internal sealed class ControlledDbConnection : DbConnection
         _blockCommitAsync = blockCommitAsync;
         _blockRollbackAsync = blockRollbackAsync;
         _blockTransactionDisposeAsync = blockTransactionDisposeAsync;
+        _ignoreBeginTransactionAsyncCancellation = ignoreBeginTransactionAsyncCancellation;
         _commandFactory = commandFactory;
 
         if (initiallyOpen)
@@ -118,6 +121,8 @@ internal sealed class ControlledDbConnection : DbConnection
     public TaskCompletionSource OpenAsyncStarted { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource BeginTransactionAsyncStarted { get; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource BeginTransactionAsyncCancellationObserved { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource CommitAsyncStarted { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -184,7 +189,17 @@ internal sealed class ControlledDbConnection : DbConnection
         BeginTransactionAsyncCount++;
         LastBeginCancellationToken = cancellationToken;
         BeginTransactionAsyncStarted.TrySetResult();
-        await _beginTransactionAsyncGate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var cancellationRegistration = cancellationToken.Register(
+            () => BeginTransactionAsyncCancellationObserved.TrySetResult());
+
+        if (_ignoreBeginTransactionAsyncCancellation)
+        {
+            await _beginTransactionAsyncGate.Task.ConfigureAwait(false);
+        }
+        else
+        {
+            await _beginTransactionAsyncGate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         if (_beginTransactionAsyncException is not null)
             throw _beginTransactionAsyncException;

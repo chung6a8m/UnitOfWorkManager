@@ -10,6 +10,27 @@ namespace UnitOfWork.Tests;
 public class ScopeLifecycleTests
 {
     [Fact]
+    public async Task CancelScopeBeforeActivation_After_Initialization_Won_Cleans_Root()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var finishedCount = 0;
+        var root = CreateRoot(connection, () => finishedCount++);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        root.CancelScopeBeforeActivation(scope);
+        await root.WaitForCanceledScopeCleanupAsync();
+
+        Assert.Equal(0, root.ActiveScopeCount);
+        Assert.Equal(UnitOfWorkCompletionOutcome.RolledBack, root.CompletionOutcome);
+        Assert.Equal(UnitOfWorkLifecycleState.Disposed, root.LifecycleState);
+        Assert.Equal(1, connection.RollbackAsyncCount);
+        Assert.Equal(1, connection.TransactionDisposeAsyncCount);
+        Assert.Equal(1, connection.ConnectionDisposeAsyncCount);
+        Assert.Equal(1, finishedCount);
+    }
+
+    [Fact]
     public async Task PreCanceled_Complete_Leaves_Scope_Active()
     {
         var connection = new ControlledDbConnection(initiallyOpen: true);

@@ -17,6 +17,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
     private readonly Dictionary<Type, object> _repositories = new();
     private readonly Func<bool> _isCurrentRoot;
     private readonly Action _onRootFinished;
+    private readonly Action? _onScopeCancellationSettlementAttempt;
     private readonly object _lifecycleLock = new();
     private readonly CancellationTokenSource _initializationCancellation = new();
 
@@ -41,12 +42,14 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         Func<bool> isCurrentRoot,
         Action onRootFinished,
         UnitOfWorkOptions? options = null,
-        IUnitOfWorkTransactionFactory? transactionFactory = null)
+        IUnitOfWorkTransactionFactory? transactionFactory = null,
+        Action? onScopeCancellationSettlementAttempt = null)
     {
         _connection = connection;
         _repositoryFactory = repositoryFactory;
         _isCurrentRoot = isCurrentRoot;
         _onRootFinished = onRootFinished;
+        _onScopeCancellationSettlementAttempt = onScopeCancellationSettlementAttempt;
         Options = (options ?? DefaultOptions).Validate();
         _transactionFactory = transactionFactory ?? new DefaultUnitOfWorkTransactionFactory();
     }
@@ -88,7 +91,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
                 throw new UnitOfWorkStateException("The unit of work root initialization was canceled.");
 
             Interlocked.Increment(ref _activeScopeCount);
-            return new UnitOfWorkScope(this);
+            return new UnitOfWorkScope(this, _onScopeCancellationSettlementAttempt);
         }
     }
 

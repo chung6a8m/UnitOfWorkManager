@@ -14,7 +14,14 @@ public class ScopeLifecycleTests
     public async Task CancelBeforeActivation_Waits_For_Scope_Settlement_Before_Blocking_Root_Lifecycle()
     {
         var connection = new ControlledDbConnection(initiallyOpen: true);
-        var root = CreateRoot(connection);
+        var scopeCancellationReached = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var root = new RootUnitOfWork(
+            connection,
+            (_, _) => throw new NotSupportedException(),
+            () => true,
+            () => { },
+            onScopeCancellationSettlementAttempt: () => scopeCancellationReached.TrySetResult());
         var scope = root.AcquireScope();
         await root.InitializeAsync();
         var settlementLock = typeof(UnitOfWorkScope)
@@ -23,8 +30,6 @@ public class ScopeLifecycleTests
         var settlementLockHeld = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseSettlementLock = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var cancellationStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rootLifecycleReached = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -41,10 +46,9 @@ public class ScopeLifecycleTests
 
         var cancellation = Task.Run(() =>
         {
-            cancellationStarted.TrySetResult();
             root.CancelScopeBeforeActivation(scope);
         });
-        await cancellationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await scopeCancellationReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var rootLifecycleProbe = Task.Run(() =>
         {

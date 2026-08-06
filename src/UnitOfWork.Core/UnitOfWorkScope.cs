@@ -17,11 +17,15 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
 {
     private readonly RootUnitOfWork _root;
     private readonly object _settlementLock = new();
+    private readonly Action? _onCancellationSettlementAttempt;
     private UnitOfWorkScopeState _state = UnitOfWorkScopeState.Reserved;
 
-    internal UnitOfWorkScope(RootUnitOfWork root)
+    internal UnitOfWorkScope(
+        RootUnitOfWork root,
+        Action? onCancellationSettlementAttempt = null)
     {
         _root = root;
+        _onCancellationSettlementAttempt = onCancellationSettlementAttempt;
     }
 
     public DbConnection Connection => _root.Connection;
@@ -44,6 +48,8 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
 
     internal Action? TryCancelBeforeActivation(Func<Action?> releaseReservation)
     {
+        _onCancellationSettlementAttempt?.Invoke();
+
         lock (_settlementLock)
         {
             if (_state != UnitOfWorkScopeState.Reserved)

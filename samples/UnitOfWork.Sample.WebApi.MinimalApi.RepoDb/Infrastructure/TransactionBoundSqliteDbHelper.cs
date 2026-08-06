@@ -74,7 +74,7 @@ public sealed class TransactionBoundSqliteDbHelper : IDbHelper
     public T GetScopeIdentity<T>(
         IDbConnection connection,
         IDbTransaction? transaction = null) =>
-        _inner.GetScopeIdentity<T>(connection, transaction);
+        _inner.GetScopeIdentity<T>(connection, transaction!);
 
     public Task<T> GetScopeIdentityAsync<T>(
         IDbConnection connection,
@@ -82,7 +82,7 @@ public sealed class TransactionBoundSqliteDbHelper : IDbHelper
         CancellationToken cancellationToken = default) =>
         _inner.GetScopeIdentityAsync<T>(
             connection,
-            transaction,
+            transaction!,
             cancellationToken);
 
     public void DynamicHandler<TEventInstance>(TEventInstance instance, string key) =>
@@ -158,7 +158,7 @@ public sealed class TransactionBoundSqliteDbHelper : IDbHelper
             size: null,
             precision: null,
             scale: null,
-            databaseType: null,
+            databaseType: null!,
             hasDefaultValue: !reader.IsDBNull(4),
             provider: ProviderName);
     }

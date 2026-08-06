@@ -247,8 +247,14 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         }
         finally
         {
-            DisposeResources();
-            _onRootFinished();
+            try
+            {
+                DisposeResources();
+            }
+            finally
+            {
+                _onRootFinished();
+            }
         }
 
         return Task.CompletedTask;

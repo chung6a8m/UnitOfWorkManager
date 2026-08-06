@@ -153,4 +153,31 @@ public sealed class ManagerIsolationTests
 
         await freshScope.CompleteAsync();
     }
+
+    [Fact]
+    public async Task Resource_Cleanup_Failure_Clears_Current_And_Allows_Fresh_Begin()
+    {
+        var cleanupFailure = new IOException("transaction cleanup failed");
+        var failingConnection = new ControlledDbConnection(
+            initiallyOpen: true,
+            transactionDisposeException: cleanupFailure);
+        var succeedingConnection = new ControlledDbConnection(initiallyOpen: true);
+        var factory = new ControlledConnectionFactory(failingConnection, succeedingConnection);
+        var manager = CreateManager(factory);
+
+        using var failingScope = await manager.BeginAsync();
+
+        var actual = await Assert.ThrowsAsync<IOException>(failingScope.CompleteAsync);
+
+        Assert.Same(cleanupFailure, actual);
+        Assert.True(failingConnection.IsDisposed);
+        Assert.False(manager.HasCurrent);
+        Assert.Throws<InvalidOperationException>(() => manager.Current);
+
+        using var freshScope = await manager.BeginAsync();
+        Assert.Equal(2, factory.CreateCount);
+        Assert.Same(freshScope.Connection, manager.Current.Connection);
+
+        await freshScope.RollbackAsync();
+    }
 }

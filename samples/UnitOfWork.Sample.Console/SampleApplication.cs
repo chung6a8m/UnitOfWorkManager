@@ -69,7 +69,7 @@ public static class SampleApplication
             output,
             "Cancellation",
             cancellationObserved,
-            "A pre-canceled BeginAsync token was observed.");
+            "A pre-canceled BeginAsync token was observed and no ambient root remained.");
 
         var concurrencyGuardObserved = await DemonstrateConcurrencyGuardAsync(
             manager,
@@ -119,13 +119,14 @@ public static class SampleApplication
 
         try
         {
-            await manager.BeginAsync(options, canceledTokenSource.Token);
+            await using var unexpectedScope =
+                await manager.BeginAsync(options, canceledTokenSource.Token);
             return false;
         }
         catch (OperationCanceledException)
             when (canceledTokenSource.IsCancellationRequested)
         {
-            return true;
+            return !manager.HasCurrent;
         }
     }
 
@@ -135,15 +136,14 @@ public static class SampleApplication
         CancellationToken cancellationToken)
     {
         await using var scope = await manager.BeginAsync(options, cancellationToken);
-
-        await using var readerCommand = scope.Connection.CreateCommand();
-        readerCommand.CommandText = "SELECT Value FROM Counter ORDER BY Id;";
-
         var concurrencyRejected = false;
 
-        await using (var reader =
-            await readerCommand.ExecuteReaderAsync(cancellationToken))
+        await using (var readerCommand = scope.Connection.CreateCommand())
         {
+            readerCommand.CommandText = "SELECT Value FROM Counter ORDER BY Id;";
+
+            await using var reader =
+                await readerCommand.ExecuteReaderAsync(cancellationToken);
             await using var overlappingCommand = scope.Connection.CreateCommand();
             overlappingCommand.CommandText = "SELECT COUNT(*) FROM Counter;";
 

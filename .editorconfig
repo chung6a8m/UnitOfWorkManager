@@ -1,0 +1,75 @@
+root = true
+
+[*]
+charset = utf-8-bom
+end_of_line = crlf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.{cs,csx}]
+indent_size = 4
+tab_width = 4
+
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+dotnet_style_readonly_field = true:suggestion
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:suggestion
+
+csharp_new_line_before_open_brace = all
+csharp_indent_block_contents = true
+csharp_indent_braces = false
+csharp_indent_case_contents = true
+csharp_indent_case_contents_when_block = true
+csharp_indent_labels = one_less_than_current
+csharp_style_namespace_declarations = file_scoped:suggestion
+
+[*.{csproj,fsproj,vbproj,props,targets,resx,resw,config,xml,xaml}]
+indent_size = 2
+
+[*.{json,jsonc}]
+charset = utf-8
+end_of_line = crlf
+indent_size = 2
+
+[*.{yml,yaml}]
+charset = utf-8
+end_of_line = lf
+indent_size = 2
+
+[*.{sh,bash,zsh}]
+charset = utf-8
+end_of_line = lf
+indent_size = 2
+
+[*.{js,jsx,mjs,cjs,ts,tsx,css,scss,html}]
+charset = utf-8
+end_of_line = lf
+indent_size = 2
+
+[*.{ps1,psm1,psd1}]
+charset = utf-8-bom
+end_of_line = crlf
+indent_size = 4
+
+[*.{cmd,bat}]
+charset = utf-8
+end_of_line = crlf
+indent_style = space
+indent_size = 2
+
+[*.md]
+charset = utf-8
+end_of_line = crlf
+trim_trailing_whitespace = false
+
+[*.sln]
+charset = utf-8-bom
+end_of_line = crlf
+indent_style = tab
+
+[{.gitattributes,.gitignore,.editorconfig}]
+charset = utf-8
+end_of_line = crlf
+indent_size = 2

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Cho phép project test truy cập các member `internal` (RunGuardedAsync, ...) -->
+    <InternalsVisibleTo Include="UnitOfWork.Tests" />
+  </ItemGroup>
+
+</Project>

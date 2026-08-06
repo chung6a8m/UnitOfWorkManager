@@ -1,0 +1,90 @@
+# ------------------------------
+# Build outputs
+# ------------------------------
+**/bin/
+**/obj/
+**/out/
+artifacts/
+publish/
+publish-*/
+
+# ------------------------------
+# Visual Studio 2022 / IDE
+# ------------------------------
+.vs/
+.idea/
+.vscode/
+_ReSharper*/
+*.DotSettings.user
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+.worktrees/
+
+# ------------------------------
+# Test / coverage
+# ------------------------------
+TestResults/
+coverage/
+coverage-report/
+BenchmarkDotNet.Artifacts/
+*.coverage
+*.coveragexml
+*.trx
+
+# ------------------------------
+# NuGet / packages
+# ------------------------------
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+
+# ------------------------------
+# Logs / temp
+# ------------------------------
+*.log
+logs/
+*.tmp
+*.temp
+
+# ------------------------------
+# Local settings / secrets
+# ------------------------------
+appsettings.Development.local.json
+appsettings.Local.json
+appsettings.*.local.json
+**/local.settings.json
+**/auth.json
+secrets/
+
+# ------------------------------
+# Local database / storage
+# ------------------------------
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.mdf
+*.ldf
+
+# ------------------------------
+# Publish profile user data
+# ------------------------------
+**/Properties/PublishProfiles/*.pubxml.user
+
+# ------------------------------
+# Frontend / generated assets (if introduced later)
+# ------------------------------
+node_modules/
+dist/
+
+# ------------------------------
+# OS files
+# ------------------------------
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,72 @@
+# Git normalizes text in the index and checks it out with deterministic EOLs.
+* text=auto
+
+# Windows and Visual Studio primary files.
+*.cs text eol=crlf
+*.csx text eol=crlf
+*.sln text eol=crlf
+*.slnx text eol=crlf
+*.csproj text eol=crlf
+*.fsproj text eol=crlf
+*.vbproj text eol=crlf
+*.props text eol=crlf
+*.targets text eol=crlf
+*.config text eol=crlf
+*.json text eol=crlf
+*.jsonc text eol=crlf
+*.toml text eol=crlf
+*.resx text eol=crlf
+*.resw text eol=crlf
+*.xaml text eol=crlf
+*.xml text eol=crlf
+*.razor text eol=crlf
+*.cshtml text eol=crlf
+*.sql text eol=crlf
+*.md text eol=crlf
+*.txt text eol=crlf
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+.gitattributes text eol=crlf
+.gitignore text eol=crlf
+.editorconfig text eol=crlf
+
+# Cross-platform scripts, CI configuration, and frontend toolchains.
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.scss text eol=lf
+*.html text eol=lf
+
+# Binary files must never be line-ending normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.bmp binary
+*.pdf binary
+*.zip binary
+*.7z binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.snk binary
+*.nupkg binary
+*.snupkg binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary

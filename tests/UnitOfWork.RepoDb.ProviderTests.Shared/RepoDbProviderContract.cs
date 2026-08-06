@@ -1,5 +1,6 @@
 using System.Data.Common;
 using RepoDb;
+using RepoDb.Contexts.Cachers;
 using RepoDb.Interfaces;
 using UnitOfWork.Core;
 using UnitOfWork.Core.Exceptions;
@@ -14,7 +15,7 @@ public static class RepoDbProviderContract
         await harness.ResetSchemaAsync();
         var helper = new CountingDbHelper(harness.GetOfficialHelper());
         harness.RegisterMappings(helper);
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(harness);
 
         await InsertAndCommitAsync(manager, "counter", 10);
@@ -28,7 +29,7 @@ public static class RepoDbProviderContract
         await harness.ResetSchemaAsync();
         var helper = new CountingDbHelper(harness.GetOfficialHelper());
         harness.RegisterMappings(helper);
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(harness);
 
         await InsertAndCommitAsync(manager, "counter", 10);
@@ -43,7 +44,7 @@ public static class RepoDbProviderContract
         await harness.ResetSchemaAsync();
         var helper = new CountingDbHelper(harness.GetOfficialHelper());
         harness.RegisterMappings(helper);
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(harness);
 
         await using (var scope = await manager.BeginAsync())
@@ -63,7 +64,7 @@ public static class RepoDbProviderContract
     {
         await harness.ResetSchemaAsync();
         harness.RegisterMappings(harness.GetOfficialHelper());
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(harness);
         long identity;
 
@@ -104,7 +105,7 @@ public static class RepoDbProviderContract
             }
         };
         harness.RegisterMappings(injectedHelper);
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(harness);
         await using var scope = await manager.BeginAsync();
         using var cancellation = new CancellationTokenSource();
@@ -146,7 +147,7 @@ public static class RepoDbProviderContract
             }
         };
         harness.RegisterMappings(injectedHelper);
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(harness);
         await using var scope = await manager.BeginAsync();
 
@@ -166,7 +167,7 @@ public static class RepoDbProviderContract
     {
         await harness.ResetSchemaAsync();
         harness.RegisterMappings(harness.GetOfficialHelper());
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var manager = CreateManager(harness);
         await using var scope = await manager.BeginAsync();
         await using var command = scope.Connection.CreateCommand();
@@ -190,7 +191,7 @@ public static class RepoDbProviderContract
     {
         await harness.ResetSchemaAsync();
         harness.RegisterMappings(harness.GetOfficialHelper());
-        DbFieldCache.Flush();
+        FlushRepoDbInsertCaches();
         var firstManager = CreateManager(harness);
         var secondManager = CreateManager(harness);
         var allReady = new TaskCompletionSource(
@@ -221,6 +222,12 @@ public static class RepoDbProviderContract
 
     private static UnitOfWorkManager CreateManager(IRepoDbProviderHarness harness) =>
         new(harness.CreateConnectionFactory(), static (_, _) => new object());
+
+    private static void FlushRepoDbInsertCaches()
+    {
+        InsertExecutionContextCache.Flush();
+        DbFieldCache.Flush();
+    }
 
     private static async Task InsertAndCommitAsync(
         UnitOfWorkManager manager,

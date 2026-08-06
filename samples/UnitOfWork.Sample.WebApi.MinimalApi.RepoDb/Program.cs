@@ -12,7 +12,7 @@ DbSettingMapper.Add<TransactionBoundDbConnection>(
     DbSettingMapper.Get<SqliteConnection>(),
     true);
 DbHelperMapper.Add<TransactionBoundDbConnection>(
-    DbHelperMapper.Get<SqliteConnection>(),
+    new TransactionBoundSqliteDbHelper(DbHelperMapper.Get<SqliteConnection>()),
     true);
 StatementBuilderMapper.Add<TransactionBoundDbConnection>(
     StatementBuilderMapper.Get<SqliteConnection>(),

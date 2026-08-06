@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Runtime.ExceptionServices;
 using UnitOfWork.Core.Exceptions;
 
 namespace UnitOfWork.Core;
@@ -15,9 +16,33 @@ public class UnitOfWork : IUnitOfWork
     private readonly Func<Type, IDbConnection, IDbTransaction?, object> _repositoryFactory;
     private readonly Dictionary<Type, object> _repositories = new();
 
-    // Định danh flow đã tạo ra UoW này.
+    private sealed class AmbientFlowHolder
+    {
+        public Guid? FlowId;
+    }
+
+    // Định danh flow đã tạo ra UoW này. Dùng holder mutable để việc cleanup ở
+    // async callee cũng được quan sát bởi execution context của caller.
     private readonly Guid _ownerFlowId;
-    internal static readonly AsyncLocal<Guid?> AmbientFlowId = new();
+    private static readonly AsyncLocal<AmbientFlowHolder?> AmbientFlow = new();
+
+    internal static Guid? AmbientFlowId
+    {
+        get => AmbientFlow.Value?.FlowId;
+        set
+        {
+            if (value.HasValue)
+            {
+                AmbientFlow.Value = new AmbientFlowHolder { FlowId = value };
+                return;
+            }
+
+            if (AmbientFlow.Value is { } current)
+                current.FlowId = null;
+
+            AmbientFlow.Value = null;
+        }
+    }
 
     // 0 = rảnh, 1 = đang có thao tác chạy — check-and-set nguyên tử qua Interlocked.
     private int _operationInProgress;
@@ -40,7 +65,7 @@ public class UnitOfWork : IUnitOfWork
         Connection = connection;
         _repositoryFactory = repositoryFactory;
         _ownerFlowId = Guid.NewGuid();
-        AmbientFlowId.Value = _ownerFlowId;
+        AmbientFlowId = _ownerFlowId;
     }
 
     public async Task BeginTransactionAsync()
@@ -64,7 +89,7 @@ public class UnitOfWork : IUnitOfWork
 
     private void EnsureSameLogicalFlow()
     {
-        var ambient = AmbientFlowId.Value;
+        var ambient = AmbientFlowId;
 
         if (ambient == null)
         {
@@ -167,10 +192,42 @@ public class UnitOfWork : IUnitOfWork
         if (_isDisposed) return;
         _isDisposed = true;
 
-        Transaction?.Dispose();
-        Connection?.Dispose();
+        Exception? transactionDisposalError = null;
+        Exception? connectionDisposalError = null;
 
-        if (AmbientFlowId.Value == _ownerFlowId)
-            AmbientFlowId.Value = null;
+        try
+        {
+            Transaction?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            transactionDisposalError = ex;
+        }
+
+        try
+        {
+            Connection.Dispose();
+        }
+        catch (Exception ex)
+        {
+            connectionDisposalError = ex;
+        }
+        finally
+        {
+            if (AmbientFlowId == _ownerFlowId)
+                AmbientFlowId = null;
+        }
+
+        if (transactionDisposalError is not null && connectionDisposalError is not null)
+        {
+            throw new AggregateException(
+                "Không thể dispose transaction và connection của UnitOfWork.",
+                transactionDisposalError,
+                connectionDisposalError);
+        }
+
+        var disposalError = transactionDisposalError ?? connectionDisposalError;
+        if (disposalError is not null)
+            ExceptionDispatchInfo.Capture(disposalError).Throw();
     }
 }

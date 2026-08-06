@@ -15,11 +15,11 @@ public class DisposalTests : Fixtures.UnitOfWorkTestBase
             t == typeof(ICounterRepository) ? new CounterRepository(c, tr) : throw new NotSupportedException());
         await uow.BeginTransactionAsync();
 
-        Assert.Equal(uow.OwnerFlowId, CoreUoW.AmbientFlowId.Value);
+        Assert.Equal(uow.OwnerFlowId, CoreUoW.AmbientFlowId);
 
         uow.Dispose();
 
-        Assert.Null(CoreUoW.AmbientFlowId.Value);
+        Assert.Null(CoreUoW.AmbientFlowId);
     }
 
     [Fact]

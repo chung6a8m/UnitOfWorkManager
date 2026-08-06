@@ -1,4 +1,5 @@
 using System.Data;
+using System.Diagnostics.CodeAnalysis;
 
 namespace UnitOfWork.Core;
 
@@ -24,6 +25,7 @@ public sealed class GuardedDbConnection : IDbConnection
         return new GuardedDbCommand(innerCommand, _owner);
     }
 
+    [AllowNull]
     public string ConnectionString
     {
         get => _inner.ConnectionString;

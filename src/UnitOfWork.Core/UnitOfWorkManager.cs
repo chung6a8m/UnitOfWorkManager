@@ -4,8 +4,17 @@ namespace UnitOfWork.Core;
 
 public class UnitOfWorkManager : IUnitOfWorkManager
 {
+    private const string CleanupExceptionDataKey = "UnitOfWorkCleanupException";
+
+    private sealed class AmbientUnitOfWorkHolder
+    {
+        public UnitOfWork? UnitOfWork;
+        public Task<IUnitOfWork>? Initialization;
+    }
+
     // static + AsyncLocal: "current UoW" theo dõi xuyên suốt 1 async call chain (1 flow logic).
-    private static readonly AsyncLocal<UnitOfWork?> _current = new();
+    // Holder mutable cho phép async helper dọn state mà caller vẫn quan sát được.
+    private static readonly AsyncLocal<AmbientUnitOfWorkHolder?> _current = new();
 
     private readonly IDbConnectionFactory _connectionFactory;
     private readonly Func<Type, IDbConnection, IDbTransaction?, object> _repositoryFactory;
@@ -18,27 +27,79 @@ public class UnitOfWorkManager : IUnitOfWorkManager
         _repositoryFactory = repositoryFactory;
     }
 
-    public bool HasCurrent => _current.Value != null;
+    public bool HasCurrent => _current.Value?.UnitOfWork != null;
 
-    public IUnitOfWork Current => _current.Value
+    public IUnitOfWork Current => _current.Value?.UnitOfWork
         ?? throw new InvalidOperationException("Chưa có UnitOfWork nào được bắt đầu.");
 
-    public async Task<IUnitOfWork> BeginAsync()
+    public Task<IUnitOfWork> BeginAsync()
     {
-        if (_current.Value != null)
+        var currentHolder = _current.Value;
+        if (currentHolder?.UnitOfWork is { } current)
         {
-            _current.Value.IncrementRef();
-            return _current.Value;
+            current.IncrementRef();
+            return currentHolder.Initialization
+                ?? Task.FromResult<IUnitOfWork>(current);
         }
 
         var connection = _connectionFactory.CreateConnection();
         var uow = new UnitOfWork(connection, _repositoryFactory);
-        await uow.BeginTransactionAsync();
-        _current.Value = uow;
-        return uow;
+        var completion = new TaskCompletionSource<IUnitOfWork>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var holder = new AmbientUnitOfWorkHolder
+        {
+            UnitOfWork = uow,
+            Initialization = completion.Task
+        };
+        _current.Value = holder;
+
+        _ = InitializeAsync(uow, holder, completion);
+        return completion.Task;
     }
 
-    public void ClearCurrent() => _current.Value = null;
+    private static async Task InitializeAsync(
+        UnitOfWork uow,
+        AmbientUnitOfWorkHolder holder,
+        TaskCompletionSource<IUnitOfWork> completion)
+    {
+        try
+        {
+            await uow.BeginTransactionAsync();
+            completion.TrySetResult(uow);
+        }
+        catch (Exception initializationError)
+        {
+            if (ReferenceEquals(holder.UnitOfWork, uow))
+            {
+                holder.UnitOfWork = null;
+                holder.Initialization = null;
+            }
+
+            try
+            {
+                uow.Dispose();
+            }
+            catch (Exception cleanupError)
+            {
+                initializationError.Data[CleanupExceptionDataKey] = cleanupError;
+            }
+
+            completion.TrySetException(initializationError);
+        }
+    }
+
+    public void ClearCurrent() => ClearAmbientState();
+
+    private static void ClearAmbientState()
+    {
+        if (_current.Value is { } holder)
+        {
+            holder.UnitOfWork = null;
+            holder.Initialization = null;
+        }
+
+        _current.Value = null;
+    }
 
     /// <summary>
     /// Chỉ dùng cho test cleanup (mở qua InternalsVisibleTo). `_current` là AsyncLocal *tĩnh*
@@ -46,5 +107,5 @@ public class UnitOfWorkManager : IUnitOfWorkManager
     /// chừng và bỏ lỡ ClearCurrent(), trạng thái cũ có thể rò rỉ sang test kế tiếp. Test base
     /// gọi hàm này trong Dispose() (luôn chạy dù test pass/fail) để đảm bảo sạch tuyệt đối.
     /// </summary>
-    internal static void ResetAmbientStateForTests() => _current.Value = null;
+    internal static void ResetAmbientStateForTests() => ClearAmbientState();
 }

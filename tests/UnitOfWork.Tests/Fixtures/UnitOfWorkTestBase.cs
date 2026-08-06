@@ -15,7 +15,7 @@ public abstract class UnitOfWorkTestBase : IDisposable
 {
     public void Dispose()
     {
-        CoreUoW.AmbientFlowId.Value = null;
+        CoreUoW.AmbientFlowId = null;
         UnitOfWorkManager.ResetAmbientStateForTests();
     }
 }

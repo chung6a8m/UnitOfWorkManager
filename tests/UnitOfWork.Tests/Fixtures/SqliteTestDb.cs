@@ -13,12 +13,13 @@ public sealed class SqliteTestDb : IDbConnectionFactory, IDisposable
 {
     private readonly string _dbPath;
 
+    internal string DatabasePath => _dbPath;
+
     public SqliteTestDb()
     {
-		//_dbPath = Path.Combine(Path.GetTempPath(), $"uow_test_{Guid.NewGuid():N}.db");
-		_dbPath = Path.Combine("C:\\MyData\\Claude\\uow-solution\\atifacts", $"uow_test_{Guid.NewGuid():N}.db");
+        _dbPath = Path.Combine(Path.GetTempPath(), $"uow_test_{Guid.NewGuid():N}.db");
 
-		using var conn = new SqliteConnection(BuildConnectionString());
+        using var conn = new SqliteConnection(BuildConnectionString());
         conn.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "CREATE TABLE Counter (Id INTEGER PRIMARY KEY, Value INTEGER NOT NULL);";

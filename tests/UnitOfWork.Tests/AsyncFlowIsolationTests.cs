@@ -62,9 +62,10 @@ public class AsyncFlowIsolationTests : Fixtures.UnitOfWorkTestBase
     [Fact]
     public async Task Different_Flow_With_Own_UnitOfWork_Cannot_Reuse_Foreign_Instance()
     {
-        using var db = new SqliteTestDb();
+        using var dbA = new SqliteTestDb();
+        using var dbB = new SqliteTestDb();
 
-        var uowA = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
+        var uowA = new CoreUoW(dbA.CreateConnection(), (t, c, tr) =>
             t == typeof(ICounterRepository) ? new CounterRepository(c, tr) : throw new NotSupportedException());
         await uowA.BeginTransactionAsync();
 
@@ -74,7 +75,9 @@ public class AsyncFlowIsolationTests : Fixtures.UnitOfWorkTestBase
         // nhưng bên trong cố tình (mô phỏng bug) gọi vào uowA của flow A.
         await RunIsolatedTaskAsync(async () =>
         {
-            var uowB = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
+            // SQLite chỉ cho một write transaction trên mỗi file. Dùng database riêng để
+            // test này chỉ đo flow isolation, không bị SQLITE_BUSY che khuất kết quả guard.
+            var uowB = new CoreUoW(dbB.CreateConnection(), (t, c, tr) =>
                 t == typeof(ICounterRepository) ? new CounterRepository(c, tr) : throw new NotSupportedException());
             await uowB.BeginTransactionAsync(); // giờ AmbientFlowId trong flow B trỏ tới uowB
 

@@ -1,4 +1,5 @@
 using System.Data;
+using System.Diagnostics.CodeAnalysis;
 
 namespace UnitOfWork.Core;
 
@@ -31,6 +32,7 @@ public sealed class GuardedDbCommand : IDbCommand
     public object? ExecuteScalar() =>
         _owner.RunGuardedAsync(() => Task.FromResult(_inner.ExecuteScalar())).GetAwaiter().GetResult();
 
+    [AllowNull]
     public string CommandText
     {
         get => _inner.CommandText;

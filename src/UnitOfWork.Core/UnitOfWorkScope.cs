@@ -35,6 +35,24 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
 
     public void Dispose()
     {
+        if ((UnitOfWorkScopeState)Volatile.Read(ref _state) != UnitOfWorkScopeState.Active)
+            return;
+
+        try
+        {
+            _root.EnsureUsable();
+        }
+        catch (UnitOfWorkConcurrencyException) when (
+            (UnitOfWorkScopeState)Volatile.Read(ref _state) != UnitOfWorkScopeState.Active)
+        {
+            return;
+        }
+        catch (UnitOfWorkStateException) when (
+            (UnitOfWorkScopeState)Volatile.Read(ref _state) != UnitOfWorkScopeState.Active)
+        {
+            return;
+        }
+
         if (Interlocked.CompareExchange(
                 ref _state,
                 (int)UnitOfWorkScopeState.Abandoned,
@@ -55,6 +73,8 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
 
     private async Task SettleAsync(UnitOfWorkScopeState settledState, UnitOfWorkScopeOutcome outcome)
     {
+        _root.EnsureUsable();
+
         if (Interlocked.CompareExchange(
                 ref _state,
                 (int)settledState,

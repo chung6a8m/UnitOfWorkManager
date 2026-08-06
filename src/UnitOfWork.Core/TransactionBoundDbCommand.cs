@@ -76,7 +76,11 @@ public sealed class TransactionBoundDbCommand : IDbCommand
 
     public void Cancel() => _inner.Cancel();
     public IDbDataParameter CreateParameter() => _inner.CreateParameter();
-    public void Prepare() => _inner.Prepare();
+    public void Prepare() => _owner.RunGuardedAsync(() =>
+    {
+        _inner.Prepare();
+        return Task.FromResult(true);
+    }).GetAwaiter().GetResult();
     public void Dispose() => _inner.Dispose();
 
     private static void EnsureBoundResource(object? value, object expected, string resourceName)

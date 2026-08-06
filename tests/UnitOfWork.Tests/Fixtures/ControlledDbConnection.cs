@@ -113,14 +113,21 @@ internal sealed class ControlledDbConnection : DbConnection
 internal sealed class ControlledDbCommand : DbCommand
 {
     private readonly Func<object?> _executeScalar;
+    private readonly Action _prepare;
     private DbConnection? _connection;
     private DbTransaction? _transaction;
 
-    public ControlledDbCommand(DbConnection connection, Func<object?> executeScalar)
+    public ControlledDbCommand(
+        DbConnection connection,
+        Func<object?> executeScalar,
+        Action? prepare = null)
     {
         _connection = connection;
         _executeScalar = executeScalar;
+        _prepare = prepare ?? (() => { });
     }
+
+    public DbTransaction? LastAssignedTransaction { get; private set; }
 
     [AllowNull]
     public override string CommandText { get; set; } = string.Empty;
@@ -141,13 +148,17 @@ internal sealed class ControlledDbCommand : DbCommand
     protected override DbTransaction? DbTransaction
     {
         get => _transaction;
-        set => _transaction = value;
+        set
+        {
+            _transaction = value;
+            LastAssignedTransaction = value;
+        }
     }
 
     public override void Cancel() { }
     public override int ExecuteNonQuery() => Convert.ToInt32(_executeScalar());
     public override object? ExecuteScalar() => _executeScalar();
-    public override void Prepare() { }
+    public override void Prepare() => _prepare();
 
     protected override DbParameter CreateDbParameter() =>
         throw new NotSupportedException("Parameters are not needed by controlled command tests.");

@@ -10,6 +10,26 @@ namespace UnitOfWork.Tests;
 public class TransactionInvariantTests
 {
     [Fact]
+    public async Task CreateCommand_Assigns_Exact_Root_Transaction_To_Controlled_Provider_Command()
+    {
+        ControlledDbCommand? providerCommand = null;
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            commandFactory: innerConnection => providerCommand =
+                new ControlledDbCommand(innerConnection, () => null));
+        var root = CreateRoot(connection);
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+
+        using var command = scope.Connection.CreateCommand();
+
+        Assert.NotNull(providerCommand);
+        Assert.Same(connection.LastTransaction, providerCommand.LastAssignedTransaction);
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
     public async Task Repository_Command_Without_Manual_Transaction_Is_Rolled_Back()
     {
         using var db = new SqliteTestDb();

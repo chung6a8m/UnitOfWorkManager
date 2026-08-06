@@ -27,10 +27,10 @@ public class ConcurrencyGuardTests
             await releaseOperation.Task;
             return true;
         });
-        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         try
         {
+            await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(() => scope.CompleteAsync());
 
             Assert.Equal(1, root.ActiveScopeCount);
@@ -70,10 +70,10 @@ public class ConcurrencyGuardTests
             await releaseOperation.Task;
             return true;
         });
-        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         try
         {
+            await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Throws<UnitOfWorkConcurrencyException>(scope.Dispose);
 
             Assert.Equal(1, root.ActiveScopeCount);
@@ -144,6 +144,56 @@ public class ConcurrencyGuardTests
         sequentialCommand.CommandText = "SELECT 42;";
         Assert.Equal(2L, sequentialCommand.ExecuteScalar());
 
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Prepare_Guard_Fails_Fast_Then_Releases_For_Sequential_Prepare()
+    {
+        var operationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var prepareCount = 0;
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            commandFactory: innerConnection => new ControlledDbCommand(
+                innerConnection,
+                () =>
+                {
+                    operationStarted.TrySetResult();
+                    releaseOperation.Task.GetAwaiter().GetResult();
+                    return 1L;
+                },
+                () => Interlocked.Increment(ref prepareCount)));
+        var manager = new UnitOfWorkManager(
+            new ControlledConnectionFactory(connection),
+            (_, _) => throw new NotSupportedException());
+        using var scope = await manager.BeginAsync();
+        using var activeCommand = scope.Connection.CreateCommand();
+        using var prepareCommand = scope.Connection.CreateCommand();
+        Task<object?>? activeOperation = null;
+
+        try
+        {
+            activeOperation = Task.Run(activeCommand.ExecuteScalar);
+            await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var exception = Assert.Throws<UnitOfWorkConcurrencyException>(prepareCommand.Prepare);
+
+            Assert.Contains("already executing another operation", exception.Message);
+            Assert.Equal(0, Volatile.Read(ref prepareCount));
+        }
+        finally
+        {
+            releaseOperation.TrySetResult();
+            if (activeOperation is not null)
+                Assert.Equal(1L, await activeOperation);
+        }
+
+        prepareCommand.Prepare();
+
+        Assert.Equal(1, Volatile.Read(ref prepareCount));
         await scope.RollbackAsync();
     }
 }

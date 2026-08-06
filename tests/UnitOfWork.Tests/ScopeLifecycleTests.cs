@@ -82,6 +82,52 @@ public class ScopeLifecycleTests
     }
 
     [Fact]
+    public async Task Dispose_Racing_With_Completed_Settlement_Remains_Idempotent()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var ownershipCheckStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOwnershipCheck = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var ownershipCheckCount = 0;
+        var root = new RootUnitOfWork(
+            connection,
+            (_, _) => throw new NotSupportedException(),
+            () =>
+            {
+                if (Interlocked.Increment(ref ownershipCheckCount) == 1)
+                {
+                    ownershipCheckStarted.TrySetResult();
+                    releaseOwnershipCheck.Task.GetAwaiter().GetResult();
+                }
+
+                return true;
+            },
+            () => { });
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        Task<Exception>? concurrentDispose = null;
+
+        try
+        {
+            concurrentDispose = Task.Run(() => Record.Exception(scope.Dispose));
+            await ownershipCheckStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await scope.CompleteAsync();
+        }
+        finally
+        {
+            releaseOwnershipCheck.TrySetResult();
+        }
+
+        Assert.Null(await concurrentDispose!);
+        Assert.Equal(UnitOfWorkCompletionOutcome.Committed, root.CompletionOutcome);
+        Assert.Equal(1, connection.LastTransaction!.CommitCount);
+        Assert.Equal(0, connection.LastTransaction.RollbackCount);
+        Assert.Equal(1, connection.LastTransaction.DisposeCount);
+    }
+
+    [Fact]
     public async Task Concurrent_InitializeAsync_Uses_One_Open_And_Transaction()
     {
         var connection = new ControlledDbConnection();

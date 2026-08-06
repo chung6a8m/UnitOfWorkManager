@@ -69,6 +69,27 @@ public class TransactionInvariantTests
     }
 
     [Fact]
+    public async Task Connection_Facade_Finalizer_Path_Does_Not_Throw()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var root = CreateRoot(connection);
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        var facade = Assert.IsType<TransactionBoundDbConnection>(scope.Connection);
+        var dispose = typeof(TransactionBoundDbConnection).GetMethod(
+            "Dispose",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            null,
+            [typeof(bool)],
+            null);
+
+        var exception = Record.Exception(() => dispose!.Invoke(facade, [false]));
+
+        Assert.Null(exception);
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
     public async Task Connection_Facade_Rejects_OpenAsync()
     {
         using var db = new SqliteTestDb();

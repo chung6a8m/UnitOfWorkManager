@@ -63,8 +63,7 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
         get
         {
             EnsureUsable();
-            return _boundConnection
-                ?? throw new UnitOfWorkStateException("The unit of work transaction has not been initialized.");
+            return ConnectionNoCheck;
         }
     }
     internal DbTransaction? Transaction => _transaction;
@@ -316,29 +315,39 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
 
     internal T GetRepository<T>() where T : class
     {
-        EnsureUsable();
-
-        var type = typeof(T);
-        if (!_repositories.TryGetValue(type, out var repository))
+        lock (_lifecycleLock)
         {
-            repository = _repositoryFactory(type, Connection);
-            _repositories[type] = repository;
-        }
+            EnsureUsableNoLock();
 
-        return (T)repository;
+            var type = typeof(T);
+            if (_repositories.TryGetValue(type, out var existing))
+                return (T)existing;
+
+            var created = _repositoryFactory(type, ConnectionNoCheck);
+            _repositories.Add(type, created);
+            return (T)created;
+        }
     }
 
     internal void EnsureUsable()
     {
+        EnsureUsableNoLock();
+    }
+
+    private void EnsureUsableNoLock()
+    {
+        if (LifecycleState != UnitOfWorkLifecycleState.Active)
+            throw new UnitOfWorkStateException("The unit of work root is not active.");
+
         if (!_isCurrentRoot())
         {
             throw new UnitOfWorkConcurrencyException(
                 "The current root for this manager is missing or foreign in this execution flow.");
         }
-
-        if (LifecycleState != UnitOfWorkLifecycleState.Active)
-            throw new UnitOfWorkStateException("The unit of work root is not active.");
     }
+
+    private DbConnection ConnectionNoCheck => _boundConnection
+        ?? throw new UnitOfWorkStateException("The unit of work transaction has not been initialized.");
 
     internal DbCommand CreateTransactionBoundCommand()
     {

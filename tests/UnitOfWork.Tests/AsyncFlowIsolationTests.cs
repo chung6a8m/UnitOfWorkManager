@@ -21,20 +21,33 @@ public class AsyncFlowIsolationTests
                 : throw new NotSupportedException());
 
     [Fact]
-    public async Task Inherited_Execution_Context_Can_Use_Retained_Scope_Sequentially()
+    public async Task Inherited_Task_Can_Use_Current_Root_Sequentially()
     {
         using var db = new SqliteTestDb();
         var manager = CreateManager(db);
         using var scope = await manager.BeginAsync();
 
-        await Task.Run(() => scope.GetRepository<ICounterRepository>().Insert(1));
+        await Task.Run(() => manager.Current.GetRepository<ICounterRepository>().Insert(1));
+        await Task.Run(() => manager.Current.GetRepository<ICounterRepository>().Insert(2));
 
         await scope.CompleteAsync();
-        Assert.Equal(1, db.CountRows());
+        Assert.Equal(2, db.CountRows());
     }
 
     [Fact]
-    public async Task Suppressed_Execution_Context_Cannot_Use_Retained_Scope()
+    public async Task Retained_Scope_After_Root_Finalization_Is_Rejected()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        var scope = await manager.BeginAsync();
+
+        await scope.CompleteAsync();
+
+        Assert.Throws<UnitOfWorkStateException>(() => scope.GetRepository<ICounterRepository>());
+    }
+
+    [Fact]
+    public async Task Suppressed_Flow_Cannot_Use_Retained_Scope()
     {
         var connection = new ControlledDbConnection(initiallyOpen: true);
         var manager = CreateManager(new ControlledConnectionFactory(connection));

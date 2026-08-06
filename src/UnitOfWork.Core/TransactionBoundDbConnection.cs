@@ -51,7 +51,13 @@ public sealed class TransactionBoundDbConnection : DbConnection
 
     protected override DbBatch CreateDbBatch() => ThrowBatchException<DbBatch>();
 
-    protected override void Dispose(bool disposing) => ThrowOwnershipException();
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            ThrowOwnershipException();
+
+        base.Dispose(disposing);
+    }
 
     private static void ThrowOwnershipException() => throw new UnitOfWorkStateException(
         "The root unit of work exclusively controls connection ownership operations.");

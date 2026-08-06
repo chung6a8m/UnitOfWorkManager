@@ -9,6 +9,87 @@ namespace UnitOfWork.Tests;
 public class ConcurrencyGuardTests
 {
     [Fact]
+    public async Task Inherited_Tasks_Cannot_Execute_Commands_Concurrently()
+    {
+        var operationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            commandFactory: innerConnection => new ControlledDbCommand(innerConnection, () =>
+            {
+                operationStarted.TrySetResult();
+                releaseOperation.Task.GetAwaiter().GetResult();
+                return 1L;
+            }));
+        var manager = new UnitOfWorkManager(
+            new ControlledConnectionFactory(connection),
+            (_, _) => throw new NotSupportedException());
+        using var scope = await manager.BeginAsync();
+        Task<object?>? firstOperation = null;
+
+        try
+        {
+            firstOperation = Task.Run(() => ExecuteScalar(manager, "SELECT hold_operation();"));
+            await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var exception = await Task.Run(
+                () => Record.Exception(() => ExecuteScalar(manager, "SELECT overlap;")));
+
+            Assert.IsType<UnitOfWorkConcurrencyException>(exception);
+        }
+        finally
+        {
+            releaseOperation.TrySetResult();
+            if (firstOperation is not null)
+                Assert.Equal(1L, await firstOperation);
+        }
+
+        await scope.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Background_Task_Still_Running_Blocks_Finalization_Until_Operation_Ends()
+    {
+        var operationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            commandFactory: innerConnection => new ControlledDbCommand(innerConnection, () =>
+            {
+                operationStarted.TrySetResult();
+                releaseOperation.Task.GetAwaiter().GetResult();
+                return 1L;
+            }));
+        var manager = new UnitOfWorkManager(
+            new ControlledConnectionFactory(connection),
+            (_, _) => throw new NotSupportedException());
+        using var scope = await manager.BeginAsync();
+        Task<object?>? backgroundOperation = null;
+
+        try
+        {
+            backgroundOperation = Task.Run(() => ExecuteScalar(manager, "SELECT hold_operation();"));
+            await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(() => scope.CompleteAsync());
+            Assert.Equal(UnitOfWorkLifecycleState.Active, ((RootUnitOfWork)manager.Current).LifecycleState);
+        }
+        finally
+        {
+            releaseOperation.TrySetResult();
+            if (backgroundOperation is not null)
+                Assert.Equal(1L, await backgroundOperation);
+        }
+
+        await scope.CompleteAsync();
+        Assert.Equal(1, connection.LastTransaction!.CommitCount);
+    }
+
+    [Fact]
     public async Task Lifecycle_Finalization_While_Operation_Is_Active_Is_Rejected_Without_Settling_Scope()
     {
         var connection = new ControlledDbConnection(initiallyOpen: true);
@@ -183,5 +264,12 @@ public class ConcurrencyGuardTests
 
         Assert.Equal(1, Volatile.Read(ref prepareCount));
         await scope.RollbackAsync();
+    }
+
+    private static object? ExecuteScalar(UnitOfWorkManager manager, string commandText)
+    {
+        using var command = manager.Current.Connection.CreateCommand();
+        command.CommandText = commandText;
+        return command.ExecuteScalar();
     }
 }

@@ -27,6 +27,21 @@ và execution context. Begin lồng nhau không trả lại cùng một owner/sc
 - Ambient root được cô lập theo từng `UnitOfWorkManager`; hai manager không chia
   sẻ current root, transaction, hay repository cache.
 
+## Chính sách execution flow và concurrency
+
+`AsyncLocal` truyền current root vào child task kế thừa execution context. Những
+task đó có thể dùng root tuần tự khi root còn active, nhưng không thể chạy hai
+command dùng chung root cùng lúc: operation lease sẽ reject overlap ngay lập tức.
+`ExecutionContext.SuppressFlow()` không nhận current root và bị reject; scope
+giữ lại sau khi root finalize cũng bị reject theo lifecycle state. Thư viện không
+cấm mọi `Task.Run`; nó cấm shared operation song song và mọi usage ngoài active
+lifecycle.
+
+Repository cache được tạo đúng một lần dưới root lifecycle lock. Repository
+factory là constructor-only, đồng bộ và không làm I/O/`await`; nếu factory ném
+lỗi, instance/key chưa được cache và lần gọi tiếp theo có thể thử lại. Lock order
+luôn là `scope settlement lock -> root lifecycle lock -> operation flag`.
+
 Mẫu dùng cơ bản:
 
 ```csharp

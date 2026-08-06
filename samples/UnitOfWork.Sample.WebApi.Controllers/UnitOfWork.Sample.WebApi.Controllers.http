@@ -1,0 +1,29 @@
+@host = http://localhost:5000
+
+GET {{host}}/api/counters
+Accept: application/json
+
+###
+
+POST {{host}}/api/counters/commit
+Content-Type: application/json
+
+{
+  "outerValue": 10,
+  "innerValue": 20
+}
+
+###
+
+POST {{host}}/api/counters/rollback
+Content-Type: application/json
+
+{
+  "outerValue": 30,
+  "innerValue": 40
+}
+
+###
+
+GET {{host}}/api/counters/diagnostics
+Accept: application/json

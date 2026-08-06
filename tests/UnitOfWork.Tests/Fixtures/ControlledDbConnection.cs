@@ -114,20 +114,30 @@ internal sealed class ControlledDbCommand : DbCommand
 {
     private readonly Func<object?> _executeScalar;
     private readonly Action _prepare;
+    private readonly Func<CommandBehavior, DbDataReader>? _executeReader;
+    private readonly Func<CommandBehavior, CancellationToken, Task<DbDataReader>>? _executeReaderAsync;
     private DbConnection? _connection;
     private DbTransaction? _transaction;
 
     public ControlledDbCommand(
         DbConnection connection,
         Func<object?> executeScalar,
-        Action? prepare = null)
+        Action? prepare = null,
+        Func<CommandBehavior, DbDataReader>? executeReader = null,
+        Func<CommandBehavior, CancellationToken, Task<DbDataReader>>? executeReaderAsync = null)
     {
         _connection = connection;
         _executeScalar = executeScalar;
         _prepare = prepare ?? (() => { });
+        _executeReader = executeReader;
+        _executeReaderAsync = executeReaderAsync;
     }
 
     public DbTransaction? LastAssignedTransaction { get; private set; }
+    public int ExecuteReaderCount { get; private set; }
+    public int ExecuteReaderAsyncCount { get; private set; }
+    public CommandBehavior? LastReaderBehavior { get; private set; }
+    public CancellationToken LastReaderCancellationToken { get; private set; }
 
     [AllowNull]
     public override string CommandText { get; set; } = string.Empty;
@@ -163,8 +173,27 @@ internal sealed class ControlledDbCommand : DbCommand
     protected override DbParameter CreateDbParameter() =>
         throw new NotSupportedException("Parameters are not needed by controlled command tests.");
 
-    protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior) =>
-        throw new NotSupportedException("Readers are not needed by controlled command tests.");
+    protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
+    {
+        ExecuteReaderCount++;
+        LastReaderBehavior = behavior;
+        return _executeReader?.Invoke(behavior)
+            ?? throw new NotSupportedException("No controlled reader was configured.");
+    }
+
+    protected override async Task<DbDataReader> ExecuteDbDataReaderAsync(
+        CommandBehavior behavior,
+        CancellationToken cancellationToken)
+    {
+        ExecuteReaderAsyncCount++;
+        LastReaderBehavior = behavior;
+        LastReaderCancellationToken = cancellationToken;
+
+        if (_executeReaderAsync is not null)
+            return await _executeReaderAsync(behavior, cancellationToken).ConfigureAwait(false);
+
+        return ExecuteDbDataReader(behavior);
+    }
 }
 
 internal sealed class ControlledDbTransaction : DbTransaction

@@ -111,8 +111,36 @@ public sealed class TransactionBoundDbCommand : DbCommand
 
     protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
     {
-        using var lease = _owner.EnterOperation(nameof(ExecuteDbDataReader));
-        return _inner.ExecuteReader(behavior);
+        RejectCloseConnection(behavior);
+        var lease = _owner.EnterOperation(nameof(ExecuteReader));
+        try
+        {
+            var reader = _inner.ExecuteReader(behavior);
+            return new TransactionBoundDbDataReader(reader, lease);
+        }
+        catch
+        {
+            lease.Dispose();
+            throw;
+        }
+    }
+
+    protected override async Task<DbDataReader> ExecuteDbDataReaderAsync(
+        CommandBehavior behavior,
+        CancellationToken cancellationToken)
+    {
+        RejectCloseConnection(behavior);
+        var lease = _owner.EnterOperation(nameof(ExecuteReaderAsync));
+        try
+        {
+            var reader = await _inner.ExecuteReaderAsync(behavior, cancellationToken).ConfigureAwait(false);
+            return new TransactionBoundDbDataReader(reader, lease);
+        }
+        catch
+        {
+            lease.Dispose();
+            throw;
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -131,6 +159,15 @@ public sealed class TransactionBoundDbCommand : DbCommand
         {
             throw new UnitOfWorkStateException(
                 $"A transaction-bound command cannot be assigned a different {resourceName}.");
+        }
+    }
+
+    private static void RejectCloseConnection(CommandBehavior behavior)
+    {
+        if ((behavior & CommandBehavior.CloseConnection) != 0)
+        {
+            throw new UnitOfWorkStateException(
+                "CommandBehavior.CloseConnection is not allowed for a transaction-bound command.");
         }
     }
 }

@@ -22,7 +22,8 @@ thất bại hoặc có exception ngoài dự kiến.
    instance đã cache.
 4. Command tạo từ transaction-bound connection nhận timeout `15` giây từ
    `UnitOfWorkOptions`.
-5. `BeginAsync()` quan sát cancellation token đã cancel.
+5. `BeginAsync()` quan sát cancellation token đã cancel và không để lại ambient
+   root có thể sử dụng.
 6. Command thứ hai bị từ chối trong lúc streaming reader còn giữ operation lease.
 
 Repository không tự gán `command.Transaction`; command tạo từ connection facade
@@ -39,7 +40,7 @@ trước operation tiếp theo.
 [PASS] Repository cache: Two GetRepository<T>() calls returned the same root-scoped instance.
 [PASS] Command timeout: Observed 15 seconds.
 [PASS] Incomplete nested scope: Committed values remain: [10, 20]
-[PASS] Cancellation: A pre-canceled BeginAsync token was observed.
+[PASS] Cancellation: A pre-canceled BeginAsync token was observed and no ambient root remained.
 [PASS] Reader concurrency guard: A second command was rejected while a reader held the operation lease.
 All sample scenarios passed.
 ```

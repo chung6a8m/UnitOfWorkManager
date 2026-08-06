@@ -150,12 +150,28 @@ public class RepositoryCacheConcurrencyTests
     [Fact]
     public async Task GetRepository_During_Finalization_Is_Rejected()
     {
-        var (manager, scopeTask) = Begin((_, _) => new Repository());
+        var factoryCalls = 0;
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            blockCommitAsync: true);
+        var manager = new UnitOfWorkManager(
+            new ControlledConnectionFactory(connection),
+            (_, _) =>
+            {
+                Interlocked.Increment(ref factoryCalls);
+                return new Repository();
+            });
+        var scopeTask = manager.BeginAsync();
         var scope = await scopeTask;
 
-        await scope.CompleteAsync();
+        var completion = scope.CompleteAsync();
+        await connection.CommitAsyncStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Throws<UnitOfWorkStateException>(() => scope.GetRepository<IRepository>());
+        Assert.Equal(0, Volatile.Read(ref factoryCalls));
+
+        connection.ReleaseCommitAsync();
+        await completion;
     }
 
     [Fact]

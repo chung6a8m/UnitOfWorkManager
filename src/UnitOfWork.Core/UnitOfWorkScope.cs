@@ -42,15 +42,16 @@ internal sealed class UnitOfWorkScope : IUnitOfWorkScope
         }
     }
 
-    internal bool TryCancelBeforeActivation()
+    internal Action? TryCancelBeforeActivation(Func<Action?> releaseReservation)
     {
         lock (_settlementLock)
         {
             if (_state != UnitOfWorkScopeState.Reserved)
-                return false;
+                return null;
 
+            var afterReservationRelease = releaseReservation();
             _state = UnitOfWorkScopeState.CanceledBeforeActivation;
-            return true;
+            return afterReservationRelease;
         }
     }
 

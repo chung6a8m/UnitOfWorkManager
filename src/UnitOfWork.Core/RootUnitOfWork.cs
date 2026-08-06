@@ -175,14 +175,16 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
 
     internal void CancelScopeBeforeActivation(UnitOfWorkScope scope)
     {
+        scope.TryCancelBeforeActivation(ReleaseCanceledScopeReservation)?.Invoke();
+    }
+
+    private Action? ReleaseCanceledScopeReservation()
+    {
         var cancelInitialization = false;
         TaskCompletionSource? canceledScopeCleanup = null;
 
         lock (_lifecycleLock)
         {
-            if (!scope.TryCancelBeforeActivation())
-                return;
-
             var activeScopeCount = Volatile.Read(ref _activeScopeCount);
             if (activeScopeCount <= 0)
             {
@@ -208,18 +210,23 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
 
         if (cancelInitialization)
         {
-            try
+            return () =>
             {
-                _initializationCancellation.Cancel();
-            }
-            finally
-            {
-                ReleaseInitializationCancellationUse();
-            }
+                try
+                {
+                    _initializationCancellation.Cancel();
+                }
+                finally
+                {
+                    ReleaseInitializationCancellationUse();
+                }
+            };
         }
 
         if (canceledScopeCleanup is not null)
-            _ = FinalizeCanceledScopeAsync(canceledScopeCleanup);
+            return () => _ = FinalizeCanceledScopeAsync(canceledScopeCleanup);
+
+        return null;
     }
 
     internal Task WaitForCanceledScopeCleanupAsync()

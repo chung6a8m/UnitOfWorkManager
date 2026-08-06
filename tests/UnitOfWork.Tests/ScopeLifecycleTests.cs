@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Reflection;
 using UnitOfWork.Core;
 using UnitOfWork.Core.Exceptions;
 using UnitOfWork.Tests.Fixtures;
@@ -9,6 +10,65 @@ namespace UnitOfWork.Tests;
 
 public class ScopeLifecycleTests
 {
+    [Fact]
+    public async Task CancelBeforeActivation_Waits_For_Scope_Settlement_Before_Blocking_Root_Lifecycle()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var root = CreateRoot(connection);
+        var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        var settlementLock = typeof(UnitOfWorkScope)
+            .GetField("_settlementLock", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(scope)!;
+        var settlementLockHeld = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSettlementLock = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var rootLifecycleReached = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var holdSettlementLock = Task.Run(() =>
+        {
+            lock (settlementLock)
+            {
+                settlementLockHeld.TrySetResult();
+                releaseSettlementLock.Task.GetAwaiter().GetResult();
+            }
+        });
+        await settlementLockHeld.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var cancellation = Task.Run(() =>
+        {
+            cancellationStarted.TrySetResult();
+            root.CancelScopeBeforeActivation(scope);
+        });
+        await cancellationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var rootLifecycleProbe = Task.Run(() =>
+        {
+            var sibling = root.AcquireScope();
+            rootLifecycleReached.TrySetResult();
+            root.CancelScopeBeforeActivation(sibling);
+        });
+
+        try
+        {
+            await rootLifecycleReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            releaseSettlementLock.TrySetResult();
+        }
+
+        await Task.WhenAll(holdSettlementLock, cancellation, rootLifecycleProbe);
+        await root.WaitForCanceledScopeCleanupAsync();
+
+        Assert.Equal(0, root.ActiveScopeCount);
+        Assert.Equal(UnitOfWorkLifecycleState.Disposed, root.LifecycleState);
+    }
+
     [Fact]
     public async Task CancelScopeBeforeActivation_After_Initialization_Won_Cleans_Root()
     {

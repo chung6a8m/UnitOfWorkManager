@@ -1,12 +1,12 @@
+using System.Data;
 using UnitOfWork.Core;
-using CoreUoW = UnitOfWork.Core.UnitOfWork;
 using UnitOfWork.Core.Exceptions;
 using UnitOfWork.Tests.Fixtures;
 using Xunit;
 
 namespace UnitOfWork.Tests;
 
-public class ConcurrencyGuardTests : Fixtures.UnitOfWorkTestBase
+public class ConcurrencyGuardTests
 {
     [Fact]
     public async Task Lifecycle_Finalization_While_Operation_Is_Active_Is_Rejected_Without_Settling_Scope()
@@ -27,18 +27,24 @@ public class ConcurrencyGuardTests : Fixtures.UnitOfWorkTestBase
             await releaseOperation.Task;
             return true;
         });
-        await operationStarted.Task;
+        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(() => scope.CompleteAsync());
+        try
+        {
+            await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(() => scope.CompleteAsync());
 
-        Assert.Equal(1, root.ActiveScopeCount);
-        Assert.Equal(UnitOfWorkLifecycleState.Active, root.LifecycleState);
-        Assert.Equal(UnitOfWorkCompletionOutcome.None, root.CompletionOutcome);
-        Assert.False(connection.IsDisposed);
-        Assert.Equal(0, connection.LastTransaction!.CommitCount);
+            Assert.Equal(1, root.ActiveScopeCount);
+            Assert.Equal(UnitOfWorkLifecycleState.Active, root.LifecycleState);
+            Assert.Equal(UnitOfWorkCompletionOutcome.None, root.CompletionOutcome);
+            Assert.False(connection.IsDisposed);
+            Assert.Equal(0, connection.LastTransaction!.CommitCount);
+        }
+        finally
+        {
+            releaseOperation.TrySetResult();
+            await activeOperation;
+        }
 
-        releaseOperation.TrySetResult();
-        await activeOperation;
         await scope.CompleteAsync();
 
         Assert.Equal(0, root.ActiveScopeCount);
@@ -64,16 +70,22 @@ public class ConcurrencyGuardTests : Fixtures.UnitOfWorkTestBase
             await releaseOperation.Task;
             return true;
         });
-        await operationStarted.Task;
+        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Throws<UnitOfWorkConcurrencyException>(scope.Dispose);
+        try
+        {
+            Assert.Throws<UnitOfWorkConcurrencyException>(scope.Dispose);
 
-        Assert.Equal(1, root.ActiveScopeCount);
-        Assert.Equal(UnitOfWorkLifecycleState.Active, root.LifecycleState);
-        Assert.False(root.RollbackRequested);
+            Assert.Equal(1, root.ActiveScopeCount);
+            Assert.Equal(UnitOfWorkLifecycleState.Active, root.LifecycleState);
+            Assert.False(root.RollbackRequested);
+        }
+        finally
+        {
+            releaseOperation.TrySetResult();
+            await activeOperation;
+        }
 
-        releaseOperation.TrySetResult();
-        await activeOperation;
         scope.Dispose();
 
         Assert.Equal(0, root.ActiveScopeCount);
@@ -81,95 +93,57 @@ public class ConcurrencyGuardTests : Fixtures.UnitOfWorkTestBase
         Assert.Equal(1, connection.LastTransaction!.RollbackCount);
     }
 
-    private static CoreUoW NewOwnedUnitOfWork(SqliteTestDb db)
-    {
-        // Tạo trực tiếp (không qua Manager) để nắm chắc AmbientFlowId đang trỏ đúng instance
-        // này trong luồng gọi hiện tại.
-        var uow = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository)
-                ? new CounterRepository(c)
-                : throw new NotSupportedException());
-        return uow;
-    }
-
     [Fact]
-    public async Task Two_Concurrent_Guarded_Operations_On_Same_UoW_Throw()
+    public async Task Command_Guard_Fails_Fast_Then_Releases_For_Sequential_Command()
     {
-        using var db = new SqliteTestDb();
-        var uow = NewOwnedUnitOfWork(db);
-        await uow.BeginTransactionAsync();
+        var operationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var executionCount = 0;
+        var connection = new ControlledDbConnection(
+            initiallyOpen: true,
+            commandFactory: innerConnection => new ControlledDbCommand(innerConnection, () =>
+            {
+                var execution = Interlocked.Increment(ref executionCount);
+                if (execution != 1)
+                    return (long)execution;
 
-        // Giả lập 1 thao tác "chậm" đang chiếm giữ guard...
-        var slowOp = uow.RunGuardedAsync(async () =>
+                operationStarted.TrySetResult();
+                releaseOperation.Task.GetAwaiter().GetResult();
+                return 1L;
+            }));
+        var manager = new UnitOfWorkManager(
+            new ControlledConnectionFactory(connection),
+            (_, _) => throw new NotSupportedException());
+        using var scope = await manager.BeginAsync();
+        using var firstCommand = scope.Connection.CreateCommand();
+        firstCommand.CommandText = "SELECT hold_operation();";
+        Task<object?>? firstOperation = null;
+
+        try
         {
-            await Task.Delay(300);
-            return true;
-        });
+            firstOperation = Task.Run(firstCommand.ExecuteScalar);
+            await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        await Task.Delay(50); // đảm bảo slowOp đã vào bên trong guard trước
+            using var overlappingCommand = scope.Connection.CreateCommand();
+            overlappingCommand.CommandText = "SELECT 2;";
+            var exception = Assert.Throws<UnitOfWorkConcurrencyException>(
+                overlappingCommand.ExecuteScalar);
 
-        // ...trong khi thao tác thứ 2 cố chạy đồng thời trên CÙNG uow -> phải bị chặn ngay lập tức
-        var ex = await Assert.ThrowsAsync<UnitOfWorkConcurrencyException>(
-            () => uow.RunGuardedAsync(() => Task.FromResult(true)));
-
-        Assert.Contains("đồng thời", ex.Message);
-
-        await slowOp; // dọn dẹp thao tác đầu tiên
-        await uow.RollbackAsync();
-        uow.Dispose();
-    }
-
-    [Fact]
-    public async Task Guard_Is_Released_After_Operation_Completes_So_Sequential_Calls_Succeed()
-    {
-        using var db = new SqliteTestDb();
-        var uow = NewOwnedUnitOfWork(db);
-        await uow.BeginTransactionAsync();
-
-        await uow.RunGuardedAsync(() => Task.FromResult(true));
-        // Gọi tuần tự (không chồng nhau) -> không được ném exception
-        var result = await uow.RunGuardedAsync(() => Task.FromResult(42));
-
-        Assert.Equal(42, result);
-        await uow.RollbackAsync();
-        uow.Dispose();
-    }
-
-    [Fact]
-    public async Task Guard_Also_Protects_Repository_Calls_Through_GuardedDbConnection()
-    {
-        using var db = new SqliteTestDb();
-        var uow = NewOwnedUnitOfWork(db);
-        await uow.BeginTransactionAsync();
-
-        var repo = uow.GetRepository<ICounterRepository>();
-
-        // Chiếm guard bằng 1 thao tác "chậm" giả lập
-        var slowOp = uow.RunGuardedAsync(async () =>
+            Assert.Contains("already executing another operation", exception.Message);
+        }
+        finally
         {
-            await Task.Delay(300);
-            return true;
-        });
-        await Task.Delay(50);
+            releaseOperation.TrySetResult();
+            if (firstOperation is not null)
+                Assert.Equal(1L, await firstOperation);
+        }
 
-        // Insert() thật sự chạy qua GuardedDbCommand.ExecuteNonQuery -> cũng phải bị chặn
-        var ex = Assert.Throws<UnitOfWorkConcurrencyException>(() => repo.Insert(1));
-        Assert.Contains("đồng thời", ex.Message);
+        using var sequentialCommand = scope.Connection.CreateCommand();
+        sequentialCommand.CommandText = "SELECT 42;";
+        Assert.Equal(2L, sequentialCommand.ExecuteScalar());
 
-        await slowOp;
-        await uow.RollbackAsync();
-        uow.Dispose();
-    }
-
-    [Fact]
-    public async Task Operation_After_Dispose_Throws_ObjectDisposedException()
-    {
-        using var db = new SqliteTestDb();
-        var uow = NewOwnedUnitOfWork(db);
-        await uow.BeginTransactionAsync();
-        uow.Dispose();
-
-        await Assert.ThrowsAsync<ObjectDisposedException>(() => uow.CommitAsync());
-        Assert.Throws<ObjectDisposedException>(() => uow.GetRepository<ICounterRepository>());
+        await scope.RollbackAsync();
     }
 }

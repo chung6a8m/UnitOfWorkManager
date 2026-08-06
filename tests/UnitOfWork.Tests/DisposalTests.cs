@@ -1,58 +1,114 @@
 using UnitOfWork.Core;
-using CoreUoW = UnitOfWork.Core.UnitOfWork;
 using UnitOfWork.Tests.Fixtures;
 using Xunit;
 
 namespace UnitOfWork.Tests;
 
-public class DisposalTests : Fixtures.UnitOfWorkTestBase
+public class DisposalTests
 {
+    private static UnitOfWorkManager CreateManager(IDbConnectionFactory factory) =>
+        new(factory, (_, _) => throw new NotSupportedException());
+
     [Fact]
-    public async Task Dispose_Clears_AmbientFlowId_Owned_By_This_Instance()
+    public async Task Completed_Scope_Dispose_Is_Idempotent()
     {
-        using var db = new SqliteTestDb();
-        var uow = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
-        await uow.BeginTransactionAsync();
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        var scope = await manager.BeginAsync();
 
-        Assert.Equal(uow.OwnerFlowId, CoreUoW.AmbientFlowId);
+        await scope.CompleteAsync();
+        var firstDispose = Record.Exception(scope.Dispose);
+        var secondDispose = Record.Exception(scope.Dispose);
 
-        uow.Dispose();
-
-        Assert.Null(CoreUoW.AmbientFlowId);
+        Assert.Null(firstDispose);
+        Assert.Null(secondDispose);
+        Assert.False(manager.HasCurrent);
+        Assert.Equal(1, connection.LastTransaction!.CommitCount);
+        Assert.Equal(0, connection.LastTransaction.RollbackCount);
+        Assert.True(connection.IsDisposed);
     }
 
     [Fact]
-    public async Task Dispose_Is_Idempotent()
+    public async Task Rollback_Completed_Scope_Dispose_Is_Idempotent()
     {
-        using var db = new SqliteTestDb();
-        var uow = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
-        await uow.BeginTransactionAsync();
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        var scope = await manager.BeginAsync();
 
-        uow.Dispose();
-        var exception = Record.Exception(() => uow.Dispose());
+        await scope.RollbackAsync();
+        var firstDispose = Record.Exception(scope.Dispose);
+        var secondDispose = Record.Exception(scope.Dispose);
 
-        Assert.Null(exception);
-        Assert.True(uow.IsDisposed);
+        Assert.Null(firstDispose);
+        Assert.Null(secondDispose);
+        Assert.False(manager.HasCurrent);
+        Assert.Equal(0, connection.LastTransaction!.CommitCount);
+        Assert.Equal(1, connection.LastTransaction.RollbackCount);
+        Assert.True(connection.IsDisposed);
     }
 
     [Fact]
-    public async Task Manager_Finalization_Allows_Fresh_BeginAsync_Afterwards()
+    public async Task Incomplete_Outermost_Scope_Dispose_Rolls_Back_And_Clears_Current()
     {
-        using var db = new SqliteTestDb();
-        var manager = new UnitOfWorkManager(db, (t, c) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        var scope = await manager.BeginAsync();
 
-        using var first = await manager.BeginAsync();
-        await first.CompleteAsync();
+        scope.Dispose();
 
         Assert.False(manager.HasCurrent);
+        Assert.Throws<InvalidOperationException>(() => manager.Current);
+        Assert.Equal(0, connection.LastTransaction!.CommitCount);
+        Assert.Equal(1, connection.LastTransaction.RollbackCount);
+        Assert.True(connection.IsDisposed);
+    }
 
-        using var second = await manager.BeginAsync();
-        Assert.NotSame(first, second);
+    [Fact]
+    public async Task Incomplete_Inner_Scope_Dispose_Does_Not_Dispose_Root()
+    {
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        var outer = await manager.BeginAsync();
+        var inner = await manager.BeginAsync();
+
+        inner.Dispose();
+
+        Assert.True(manager.HasCurrent);
+        Assert.False(connection.IsDisposed);
+        Assert.Equal(0, connection.LastTransaction!.CommitCount);
+        Assert.Equal(0, connection.LastTransaction.RollbackCount);
+
+        await outer.CompleteAsync();
+        outer.Dispose();
+        inner.Dispose();
+
+        Assert.False(manager.HasCurrent);
+        Assert.Equal(0, connection.LastTransaction.CommitCount);
+        Assert.Equal(1, connection.LastTransaction.RollbackCount);
+        Assert.True(connection.IsDisposed);
+    }
+
+    [Fact]
+    public async Task Fresh_Begin_Works_After_Root_Finalization_Without_ClearCurrent()
+    {
+        var firstConnection = new ControlledDbConnection(initiallyOpen: true);
+        var secondConnection = new ControlledDbConnection(initiallyOpen: true);
+        var factory = new ControlledConnectionFactory(firstConnection, secondConnection);
+        var manager = CreateManager(factory);
+        var first = await manager.BeginAsync();
+        var firstFacade = first.Connection;
+
+        await first.CompleteAsync();
+        first.Dispose();
+        var second = await manager.BeginAsync();
+
+        Assert.Equal(2, factory.CreateCount);
+        Assert.NotSame(firstFacade, second.Connection);
+        Assert.True(manager.HasCurrent);
 
         await second.RollbackAsync();
+        second.Dispose();
+        Assert.False(manager.HasCurrent);
     }
 
     [Fact]
@@ -64,9 +120,7 @@ public class DisposalTests : Fixtures.UnitOfWorkTestBase
             commitException: commitFailure);
         var freshConnection = new ControlledDbConnection(initiallyOpen: true);
         var factory = new ControlledConnectionFactory(failedConnection, freshConnection);
-        var manager = new UnitOfWorkManager(
-            factory,
-            (_, _) => throw new NotSupportedException());
+        var manager = CreateManager(factory);
         var first = await manager.BeginAsync();
 
         var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => first.CompleteAsync());
@@ -78,7 +132,8 @@ public class DisposalTests : Fixtures.UnitOfWorkTestBase
         using var second = await manager.BeginAsync();
 
         Assert.Equal(2, factory.CreateCount);
-        Assert.Same(freshConnection, ((RootUnitOfWork)manager.Current).Transaction!.Connection);
+        Assert.Same(second.Connection, manager.Current.Connection);
+        Assert.False(freshConnection.IsDisposed);
         await second.RollbackAsync();
     }
 }

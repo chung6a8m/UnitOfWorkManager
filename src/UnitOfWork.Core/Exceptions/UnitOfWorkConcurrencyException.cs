@@ -1,9 +1,8 @@
 namespace UnitOfWork.Core.Exceptions;
 
 /// <summary>
-/// Ném ra khi một <see cref="UnitOfWork.Core.UnitOfWork"/> bị truy cập:
-///  - từ một "luồng logic" (AsyncLocal flow) khác với luồng đã tạo ra nó, hoặc
-///  - đồng thời bởi hai thao tác cùng lúc (vi phạm tính không thread-safe của IDbConnection/IDbTransaction).
+/// Ném ra khi một root unit of work bị truy cập từ execution flow không có current root
+/// tương ứng của manager, hoặc khi hai database operation cố chạy đồng thời trên cùng root.
 /// </summary>
 public class UnitOfWorkConcurrencyException : Exception
 {

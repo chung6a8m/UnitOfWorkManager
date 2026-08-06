@@ -215,7 +215,10 @@ internal sealed class RootUnitOfWork : IUnitOfWorkContext
     internal void EnsureUsable()
     {
         if (!_isCurrentRoot())
-            throw new UnitOfWorkConcurrencyException("The current execution flow does not own this unit of work root.");
+        {
+            throw new UnitOfWorkConcurrencyException(
+                "The current root for this manager is missing or foreign in this execution flow.");
+        }
 
         if (LifecycleState != UnitOfWorkLifecycleState.Active)
             throw new UnitOfWorkStateException("The unit of work root is not active.");

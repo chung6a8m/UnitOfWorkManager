@@ -4,7 +4,7 @@ using Xunit;
 
 namespace UnitOfWork.Tests;
 
-public class CommitRollbackIntegrationTests : Fixtures.UnitOfWorkTestBase
+public class CommitRollbackIntegrationTests
 {
     private static UnitOfWorkManager CreateManager(SqliteTestDb db) =>
         new(db, (type, conn) =>

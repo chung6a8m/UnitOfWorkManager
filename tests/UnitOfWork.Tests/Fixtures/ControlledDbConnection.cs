@@ -32,6 +32,7 @@ internal sealed class ControlledDbConnection : DbConnection
     private readonly Exception? _transactionDisposeException;
     private readonly Exception? _commitException;
     private readonly Exception? _rollbackException;
+    private readonly Func<DbConnection, DbCommand>? _commandFactory;
     private ConnectionState _state;
 
     public ControlledDbConnection(
@@ -40,7 +41,8 @@ internal sealed class ControlledDbConnection : DbConnection
         Exception? disposeException = null,
         Exception? transactionDisposeException = null,
         Exception? commitException = null,
-        Exception? rollbackException = null)
+        Exception? rollbackException = null,
+        Func<DbConnection, DbCommand>? commandFactory = null)
     {
         _state = initiallyOpen ? ConnectionState.Open : ConnectionState.Closed;
         _beginTransactionException = beginTransactionException;
@@ -48,6 +50,7 @@ internal sealed class ControlledDbConnection : DbConnection
         _transactionDisposeException = transactionDisposeException;
         _commitException = commitException;
         _rollbackException = rollbackException;
+        _commandFactory = commandFactory;
 
         if (initiallyOpen)
             _openGate.TrySetResult();
@@ -93,8 +96,8 @@ internal sealed class ControlledDbConnection : DbConnection
         return LastTransaction;
     }
 
-    protected override DbCommand CreateDbCommand() =>
-        throw new NotSupportedException("Tests never execute commands on this connection.");
+    protected override DbCommand CreateDbCommand() => _commandFactory?.Invoke(this)
+        ?? throw new NotSupportedException("Tests never execute commands on this connection.");
 
     protected override void Dispose(bool disposing)
     {
@@ -105,6 +108,52 @@ internal sealed class ControlledDbConnection : DbConnection
         if (disposing && _disposeException is not null)
             throw _disposeException;
     }
+}
+
+internal sealed class ControlledDbCommand : DbCommand
+{
+    private readonly Func<object?> _executeScalar;
+    private DbConnection? _connection;
+    private DbTransaction? _transaction;
+
+    public ControlledDbCommand(DbConnection connection, Func<object?> executeScalar)
+    {
+        _connection = connection;
+        _executeScalar = executeScalar;
+    }
+
+    [AllowNull]
+    public override string CommandText { get; set; } = string.Empty;
+    public override int CommandTimeout { get; set; }
+    public override CommandType CommandType { get; set; }
+    public override bool DesignTimeVisible { get; set; }
+    public override UpdateRowSource UpdatedRowSource { get; set; }
+
+    protected override DbConnection? DbConnection
+    {
+        get => _connection;
+        set => _connection = value;
+    }
+
+    protected override DbParameterCollection DbParameterCollection =>
+        throw new NotSupportedException("Parameters are not needed by controlled command tests.");
+
+    protected override DbTransaction? DbTransaction
+    {
+        get => _transaction;
+        set => _transaction = value;
+    }
+
+    public override void Cancel() { }
+    public override int ExecuteNonQuery() => Convert.ToInt32(_executeScalar());
+    public override object? ExecuteScalar() => _executeScalar();
+    public override void Prepare() { }
+
+    protected override DbParameter CreateDbParameter() =>
+        throw new NotSupportedException("Parameters are not needed by controlled command tests.");
+
+    protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior) =>
+        throw new NotSupportedException("Readers are not needed by controlled command tests.");
 }
 
 internal sealed class ControlledDbTransaction : DbTransaction

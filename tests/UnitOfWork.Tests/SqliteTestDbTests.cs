@@ -3,7 +3,7 @@ using Xunit;
 
 namespace UnitOfWork.Tests;
 
-public sealed class SqliteTestDbTests : UnitOfWorkTestBase
+public sealed class SqliteTestDbTests
 {
     [Fact]
     public void Database_File_Is_Created_In_The_System_Temp_Directory()

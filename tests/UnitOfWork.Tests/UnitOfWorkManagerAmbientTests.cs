@@ -1,11 +1,10 @@
 using UnitOfWork.Core;
 using UnitOfWork.Tests.Fixtures;
 using Xunit;
-using CoreUoW = UnitOfWork.Core.UnitOfWork;
 
 namespace UnitOfWork.Tests;
 
-public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
+public sealed class UnitOfWorkManagerAmbientTests
 {
     private sealed class RepositoryMarker { }
 
@@ -148,7 +147,6 @@ public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
         Assert.True(connection.IsDisposed);
         Assert.False(manager.HasCurrent);
         Assert.Throws<InvalidOperationException>(() => manager.Current);
-        Assert.Null(CoreUoW.AmbientFlowId);
     }
 
     [Fact]
@@ -158,49 +156,36 @@ public sealed class UnitOfWorkManagerAmbientTests : UnitOfWorkTestBase
         var connection = new ControlledDbConnection(
             initiallyOpen: true,
             transactionDisposeException: transactionCleanupError);
-        var uow = new CoreUoW(connection, (type, _, _) =>
-            type == typeof(RepositoryMarker)
-                ? new RepositoryMarker()
-                : throw new NotSupportedException());
-        await uow.BeginTransactionAsync();
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        var scope = await manager.BeginAsync();
 
-        var actual = Assert.Throws<IOException>(uow.Dispose);
+        var actual = await Assert.ThrowsAsync<IOException>(scope.CompleteAsync);
 
         Assert.Same(transactionCleanupError, actual);
         Assert.True(connection.IsDisposed);
-        Assert.Null(CoreUoW.AmbientFlowId);
+        Assert.False(manager.HasCurrent);
+        scope.Dispose();
     }
 
     [Fact]
-    public async Task Child_Flow_With_Its_Own_UnitOfWork_Does_Not_Clear_Parent_Flow()
+    public async Task Inherited_Child_Flow_Settling_Nested_Scope_Does_Not_Clear_Parent_Current()
     {
-        var parentConnection = new ControlledDbConnection(initiallyOpen: true);
-        var childConnection = new ControlledDbConnection(initiallyOpen: true);
-        var parent = new CoreUoW(parentConnection, (type, _, _) =>
-            type == typeof(RepositoryMarker)
-                ? new RepositoryMarker()
-                : throw new NotSupportedException());
-        await parent.BeginTransactionAsync();
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        using var parent = await manager.BeginAsync();
 
-        try
+        await Task.Run(async () =>
         {
-            await Task.Run(async () =>
-            {
-                var child = new CoreUoW(childConnection, (type, _, _) =>
-                    type == typeof(RepositoryMarker)
-                        ? new RepositoryMarker()
-                        : throw new NotSupportedException());
-                await child.BeginTransactionAsync();
-                await child.RollbackAsync();
-                child.Dispose();
-            });
+            using var child = await manager.BeginAsync();
+            await child.RollbackAsync();
+        });
 
-            Assert.NotNull(parent.GetRepository<RepositoryMarker>());
-            await parent.RollbackAsync();
-        }
-        finally
-        {
-            parent.Dispose();
-        }
+        Assert.True(manager.HasCurrent);
+        Assert.NotNull(parent.GetRepository<RepositoryMarker>());
+        Assert.False(connection.IsDisposed);
+
+        await parent.CompleteAsync();
+        Assert.False(manager.HasCurrent);
+        Assert.Equal(1, connection.LastTransaction!.RollbackCount);
     }
 }

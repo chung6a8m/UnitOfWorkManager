@@ -1,107 +1,77 @@
 using UnitOfWork.Core;
-using CoreUoW = UnitOfWork.Core.UnitOfWork;
 using UnitOfWork.Core.Exceptions;
 using UnitOfWork.Tests.Fixtures;
 using Xunit;
 
 namespace UnitOfWork.Tests;
 
-public class AsyncFlowIsolationTests : Fixtures.UnitOfWorkTestBase
+public class AsyncFlowIsolationTests
 {
-    [Fact]
-    public async Task Task_Run_Without_SuppressFlow_Can_Still_See_Same_Flow_And_Succeeds()
-    {
-        // AsyncLocal MẶC ĐỊNH flow xuyên qua Task.Run trong cùng execution context
-        // -> đây là hành vi "vô tình chia sẻ" mà bài toán gốc cảnh báo. Test này xác nhận
-        // guard KHÔNG chặn trường hợp hợp lệ (task con thật sự thuộc cùng flow logic).
-        using var db = new SqliteTestDb();
-        var uow = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
-        await uow.BeginTransactionAsync();
-
-        await Task.Run(() =>
-        {
-            // Cùng flow (AsyncLocal chảy vào Task.Run) -> không bị chặn
-            uow.GetRepository<ICounterRepository>().Insert(1);
-        });
-
-        await uow.RollbackAsync();
-        uow.Dispose();
-    }
+    private static UnitOfWorkManager CreateManager(IDbConnectionFactory factory) =>
+        new(factory, (type, connection) =>
+            type == typeof(ICounterRepository)
+                ? new CounterRepository(connection)
+                : throw new NotSupportedException());
 
     [Fact]
-    public async Task SuppressFlow_Isolated_Task_Cannot_See_Parent_UnitOfWork()
+    public async Task Inherited_Execution_Context_Can_Use_Retained_Scope_Sequentially()
     {
         using var db = new SqliteTestDb();
-        var uow = new CoreUoW(db.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
-        await uow.BeginTransactionAsync();
+        var manager = CreateManager(db);
+        using var scope = await manager.BeginAsync();
 
-        UnitOfWorkConcurrencyException? caught = null;
+        await Task.Run(() => scope.GetRepository<ICounterRepository>().Insert(1));
 
-        await RunIsolatedAsync(() =>
-        {
-            try
-            {
-                // Task này không thấy AmbientFlowId của flow cha (đã bị SuppressFlow chặn)
-                uow.GetRepository<ICounterRepository>();
-            }
-            catch (UnitOfWorkConcurrencyException ex)
-            {
-                caught = ex;
-            }
-        });
-
-        Assert.NotNull(caught);
-        Assert.Contains("AsyncLocal rỗng", caught!.Message);
-
-        await uow.RollbackAsync();
-        uow.Dispose();
+        await scope.CompleteAsync();
+        Assert.Equal(1, db.CountRows());
     }
 
     [Fact]
-    public async Task Different_Flow_With_Own_UnitOfWork_Cannot_Reuse_Foreign_Instance()
+    public async Task Suppressed_Execution_Context_Cannot_Use_Retained_Scope()
     {
-        using var dbA = new SqliteTestDb();
-        using var dbB = new SqliteTestDb();
+        var connection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(connection));
+        using var scope = await manager.BeginAsync();
 
-        var uowA = new CoreUoW(dbA.CreateConnection(), (t, c, tr) =>
-            t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
-        await uowA.BeginTransactionAsync();
+        var exception = await RunIsolatedAsync(
+            () => Record.Exception(() => scope.GetRepository<ICounterRepository>()));
 
-        UnitOfWorkConcurrencyException? caught = null;
+        var concurrencyException = Assert.IsType<UnitOfWorkConcurrencyException>(exception);
+        Assert.Contains(
+            "current root for this manager is missing or foreign",
+            concurrencyException.Message,
+            StringComparison.OrdinalIgnoreCase);
 
-        // Chạy "flow B" độc lập: SuppressFlow rồi tự tạo UnitOfWork riêng (đúng cách),
-        // nhưng bên trong cố tình (mô phỏng bug) gọi vào uowA của flow A.
-        await RunIsolatedTaskAsync(async () =>
-        {
-            // SQLite chỉ cho một write transaction trên mỗi file. Dùng database riêng để
-            // test này chỉ đo flow isolation, không bị SQLITE_BUSY che khuất kết quả guard.
-            var uowB = new CoreUoW(dbB.CreateConnection(), (t, c, tr) =>
-                t == typeof(ICounterRepository) ? new CounterRepository(c) : throw new NotSupportedException());
-            await uowB.BeginTransactionAsync(); // giờ AmbientFlowId trong flow B trỏ tới uowB
-
-            try
-            {
-                uowA.GetRepository<ICounterRepository>(); // dùng nhầm UoW của flow A
-            }
-            catch (UnitOfWorkConcurrencyException ex)
-            {
-                caught = ex;
-            }
-
-            await uowB.RollbackAsync();
-            uowB.Dispose();
-        });
-
-        Assert.NotNull(caught);
-        Assert.Contains("flow khác", caught!.Message);
-
-        await uowA.RollbackAsync();
-        uowA.Dispose();
+        await scope.RollbackAsync();
     }
 
-    private static Task RunIsolatedAsync(Action action)
+    [Fact]
+    public async Task Foreign_Current_Root_Cannot_Use_Retained_Parent_Scope()
+    {
+        var parentConnection = new ControlledDbConnection(initiallyOpen: true);
+        var childConnection = new ControlledDbConnection(initiallyOpen: true);
+        var manager = CreateManager(new ControlledConnectionFactory(parentConnection, childConnection));
+        using var parentScope = await manager.BeginAsync();
+
+        var exception = await RunIsolatedAsync(async () =>
+        {
+            using var childScope = await manager.BeginAsync();
+            var actual = Record.Exception(() => parentScope.GetRepository<ICounterRepository>());
+            await childScope.RollbackAsync();
+            return actual;
+        });
+
+        var concurrencyException = Assert.IsType<UnitOfWorkConcurrencyException>(exception);
+        Assert.Contains(
+            "current root for this manager is missing or foreign",
+            concurrencyException.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(manager.HasCurrent);
+        await parentScope.RollbackAsync();
+    }
+
+    private static Task<T> RunIsolatedAsync<T>(Func<T> action)
     {
         using (ExecutionContext.SuppressFlow())
         {
@@ -109,7 +79,7 @@ public class AsyncFlowIsolationTests : Fixtures.UnitOfWorkTestBase
         }
     }
 
-    private static Task RunIsolatedTaskAsync(Func<Task> action)
+    private static Task<T> RunIsolatedAsync<T>(Func<Task<T>> action)
     {
         using (ExecutionContext.SuppressFlow())
         {

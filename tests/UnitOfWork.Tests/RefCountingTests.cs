@@ -4,7 +4,7 @@ using Xunit;
 
 namespace UnitOfWork.Tests;
 
-public class RefCountingTests : Fixtures.UnitOfWorkTestBase
+public class RefCountingTests
 {
     private static UnitOfWorkManager CreateManager(SqliteTestDb db) =>
         new(db, (type, connection) =>

@@ -1,10 +1,25 @@
+using Microsoft.Data.Sqlite;
+using RepoDb;
 using UnitOfWork.Core;
 using UnitOfWork.Sample.WebApi.MinimalApi.Endpoints;
 using UnitOfWork.Sample.WebApi.MinimalApi.Infrastructure;
 using UnitOfWork.Sample.WebApi.MinimalApi.Repositories;
 using UnitOfWork.Sample.WebApi.MinimalApi.Services;
 
-RepoDb.SqliteBootstrap.Initialize();
+GlobalConfiguration.Setup().UseSqlite();
+
+DbSettingMapper.Add(
+    typeof(TransactionBoundDbConnection),
+    DbSettingMapper.Get<SqliteConnection>(),
+    true);
+DbHelperMapper.Add(
+    typeof(TransactionBoundDbConnection),
+    DbHelperMapper.Get<SqliteConnection>(),
+    true);
+StatementBuilderMapper.Add(
+    typeof(TransactionBoundDbConnection),
+    StatementBuilderMapper.Get<SqliteConnection>(),
+    true);
 
 var builder = WebApplication.CreateBuilder(args);
 

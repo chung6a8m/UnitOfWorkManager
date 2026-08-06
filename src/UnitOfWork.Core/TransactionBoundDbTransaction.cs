@@ -5,17 +5,17 @@ namespace UnitOfWork.Core;
 
 public sealed class TransactionBoundDbTransaction : IDbTransaction
 {
-    private readonly IDbTransaction _inner;
-    private readonly IDbConnection _connection;
+    private readonly RootUnitOfWork _owner;
+    private readonly TransactionBoundDbConnection _connection;
 
-    internal TransactionBoundDbTransaction(IDbTransaction inner, IDbConnection connection)
+    internal TransactionBoundDbTransaction(RootUnitOfWork owner, TransactionBoundDbConnection connection)
     {
-        _inner = inner;
+        _owner = owner;
         _connection = connection;
     }
 
     public IDbConnection Connection => _connection;
-    public IsolationLevel IsolationLevel => _inner.IsolationLevel;
+    public IsolationLevel IsolationLevel => _owner.GetTransactionIsolationLevel();
 
     public void Commit() => ThrowOwnershipException();
     public void Rollback() => ThrowOwnershipException();

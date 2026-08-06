@@ -7,14 +7,14 @@ namespace UnitOfWork.Core;
 public sealed class TransactionBoundDbCommand : IDbCommand
 {
     private readonly IDbCommand _inner;
-    private readonly IDbConnection _connection;
-    private readonly IDbTransaction _transaction;
+    private readonly TransactionBoundDbConnection _connection;
+    private readonly TransactionBoundDbTransaction _transaction;
     private readonly RootUnitOfWork _owner;
 
     internal TransactionBoundDbCommand(
         IDbCommand inner,
-        IDbConnection connection,
-        IDbTransaction transaction,
+        TransactionBoundDbConnection connection,
+        TransactionBoundDbTransaction transaction,
         RootUnitOfWork owner)
     {
         _inner = inner;

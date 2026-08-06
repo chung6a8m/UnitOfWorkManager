@@ -1,4 +1,5 @@
 using System.Data;
+using System.Reflection;
 using UnitOfWork.Core;
 using UnitOfWork.Core.Exceptions;
 using UnitOfWork.Tests.Fixtures;
@@ -98,6 +99,27 @@ public class TransactionInvariantTests
         await scope.RollbackAsync();
     }
 
+    [Fact]
+    public async Task Facades_Do_Not_Retain_Raw_Root_Resources()
+    {
+        using var db = new SqliteTestDb();
+        var rawConnection = db.CreateConnection();
+        var root = CreateRoot(rawConnection);
+        using var scope = root.AcquireScope();
+        await root.InitializeAsync();
+        using var command = scope.Connection.CreateCommand();
+
+        var connectionFacade = Assert.IsType<TransactionBoundDbConnection>(scope.Connection);
+        var transactionFacade = Assert.IsType<TransactionBoundDbTransaction>(command.Transaction);
+
+        AssertDoesNotRetainRawResource(connectionFacade, rawConnection);
+        AssertDoesNotRetainRawResource(connectionFacade, root.Transaction!);
+        AssertDoesNotRetainRawResource(transactionFacade, rawConnection);
+        AssertDoesNotRetainRawResource(transactionFacade, root.Transaction!);
+
+        await scope.RollbackAsync();
+    }
+
     private static RootUnitOfWork CreateRoot(IDbConnection connection) =>
         new(
             connection,
@@ -136,5 +158,14 @@ public class TransactionInvariantTests
         public void Commit() { }
         public void Rollback() { }
         public void Dispose() { }
+    }
+
+    private static void AssertDoesNotRetainRawResource(object facade, object rawResource)
+    {
+        var retainedValues = facade.GetType()
+            .GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            .Select(field => field.GetValue(facade));
+
+        Assert.DoesNotContain(retainedValues, value => ReferenceEquals(value, rawResource));
     }
 }

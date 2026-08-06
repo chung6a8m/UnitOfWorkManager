@@ -100,7 +100,7 @@ internal sealed class RootUnitOfWork
             }
 
             _transaction = _connection.BeginTransaction();
-            _boundConnection = new TransactionBoundDbConnection(_connection, _transaction, this);
+            _boundConnection = new TransactionBoundDbConnection(this);
             Volatile.Write(ref _lifecycleState, (int)UnitOfWorkLifecycleState.Active);
             completion.TrySetResult();
         }
@@ -198,6 +198,26 @@ internal sealed class RootUnitOfWork
         if (LifecycleState != UnitOfWorkLifecycleState.Active)
             throw new UnitOfWorkStateException("The unit of work root is not active.");
     }
+
+    internal IDbCommand CreateTransactionBoundCommand()
+    {
+        EnsureUsable();
+
+        var transaction = _transaction
+            ?? throw new UnitOfWorkStateException("The unit of work transaction has not been initialized.");
+        var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        return command;
+    }
+
+    internal string GetConnectionString() => _connection.ConnectionString;
+    internal int GetConnectionTimeout() => _connection.ConnectionTimeout;
+    internal string GetDatabase() => _connection.Database;
+    internal ConnectionState GetConnectionState() => _connection.State;
+
+    internal IsolationLevel GetTransactionIsolationLevel() => (_transaction
+        ?? throw new UnitOfWorkStateException("The unit of work transaction has not been initialized."))
+        .IsolationLevel;
 
     private Task FinalizeAsync()
     {

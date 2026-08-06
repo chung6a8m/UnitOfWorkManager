@@ -23,7 +23,7 @@ và execution context. Begin lồng nhau không trả lại cùng một owner/sc
   tạo, và sau cleanup/finalization failure. Không gọi `ClearCurrent()` thủ công.
 - Connection được cung cấp cho context bị ràng buộc vào transaction root.
   Command tạo từ connection đó tự enlist vào transaction, vì vậy repository và
-  Dapper không được gán `command.Transaction` thủ công.
+  data-access library không được gán `command.Transaction` thủ công.
 - Ambient root được cô lập theo từng `UnitOfWorkManager`; hai manager không chia
   sẻ current root, transaction, hay repository cache.
 
@@ -192,6 +192,28 @@ dotnet run --project samples/UnitOfWork.Sample.WebApi.Controllers/UnitOfWork.Sam
 Xem endpoint, request/response mẫu và quy tắc Dapper tại
 [`samples/UnitOfWork.Sample.WebApi.Controllers/README.md`](samples/UnitOfWork.Sample.WebApi.Controllers/README.md).
 
+### ASP.NET Core Minimal API + RepoDb + SQLite
+
+Sample tại `samples/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb` giữ HTTP layer
+gọn hơn và minh họa RepoDb trên transaction-bound connection:
+
+```text
+Minimal API -> Application Service -> Nested Service -> RepoDb Repository
+```
+
+Sample dùng RepoDb entity/raw-SQL operations mà không truyền transaction riêng,
+minh họa nested commit, rollback từ inner scope incomplete, repository cache,
+timeout, cancellation boundary và reader concurrency guard.
+
+```powershell
+dotnet run --project samples/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb.csproj
+```
+
+Các RepoDb async overload trong sample không nhận `CancellationToken`; repository
+kiểm tra token trước/sau operation và Unit of Work lifecycle vẫn nhận request
+token trực tiếp. Xem chi tiết tại
+[`samples/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb/README.md`](samples/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb/README.md).
+
 ## Test integration SQLite
 
 Test dùng database SQLite file-based thật, được tạo bằng tên ngẫu nhiên trong
@@ -207,9 +229,9 @@ Fixture xóa file `.db` và các sidecar `-journal`, `-wal`, `-shm` với retry 
 để phát hiện resource leak mà không phụ thuộc đường dẫn workspace hay máy phát
 triển cụ thể.
 
-Web API integration test dùng `WebApplicationFactory<Program>` để chạy đủ list,
-commit, rollback và diagnostics qua HTTP trên database riêng của application
-host.
+Hai Web API integration test project dùng `WebApplicationFactory<Program>` để
+chạy đủ list, commit, rollback và diagnostics qua HTTP trên database riêng của
+application host.
 
 ## Cấu trúc
 
@@ -229,12 +251,23 @@ samples/UnitOfWork.Sample.WebApi.Controllers/
   Services/NestedCounterService.cs
   Program.cs
 
+samples/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb/
+  Endpoints/CounterEndpoints.cs
+  Infrastructure/SqliteSampleDatabase.cs
+  Repositories/RepoDbCounterRepository.cs
+  Services/CounterApplicationService.cs
+  Services/NestedCounterService.cs
+  Program.cs
+
 src/UnitOfWork.Core/
   IUnitOfWorkContext.cs
   IUnitOfWorkScope.cs
   RootUnitOfWork.cs
   UnitOfWorkManager.cs
   UnitOfWorkScope.cs
+
+tests/UnitOfWork.Sample.WebApi.MinimalApi.RepoDb.Tests/
+  WebApiSampleTests.cs
 
 tests/UnitOfWork.Sample.WebApi.Tests/
   WebApiSampleTests.cs

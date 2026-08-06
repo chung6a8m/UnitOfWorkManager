@@ -157,6 +157,27 @@ Các đổi tên P0 vẫn áp dụng: `IUnitOfWork` thành `IUnitOfWorkScope` /
 `IUnitOfWorkContext`, `CommitAsync()` thành `CompleteAsync()`, bỏ
 `ClearCurrent()`, và bỏ `command.Transaction = transaction`.
 
+## Sample Console + SQLite
+
+Sample runnable tại `samples/UnitOfWork.Sample.Console` dùng SQLite file-based
+thật và minh họa:
+
+- outer/inner service cùng commit một root transaction;
+- inner scope không complete buộc toàn bộ root rollback;
+- repository cache theo root;
+- command timeout từ `UnitOfWorkOptions`;
+- cancellation trước `BeginAsync()`;
+- concurrency guard trong toàn bộ lifetime của streaming reader.
+
+Chạy sample:
+
+```powershell
+dotnet run --project samples/UnitOfWork.Sample.Console/UnitOfWork.Sample.Console.csproj
+```
+
+Xem giải thích và output mong đợi tại
+[`samples/UnitOfWork.Sample.Console/README.md`](samples/UnitOfWork.Sample.Console/README.md).
+
 ## Test integration SQLite
 
 Test dùng database SQLite file-based thật, được tạo bằng tên ngẫu nhiên trong
@@ -175,6 +196,13 @@ triển cụ thể.
 ## Cấu trúc
 
 ```text
+samples/UnitOfWork.Sample.Console/
+  Infrastructure/SqliteSampleDatabase.cs
+  Repositories/CounterRepository.cs
+  Services/CounterService.cs
+  SampleApplication.cs
+  Program.cs
+
 src/UnitOfWork.Core/
   IUnitOfWorkContext.cs
   IUnitOfWorkScope.cs
@@ -183,6 +211,7 @@ src/UnitOfWork.Core/
   UnitOfWorkScope.cs
 
 tests/UnitOfWork.Tests/
+  ConsoleSampleTests.cs
   ScopeLifecycleTests.cs
   TransactionInvariantTests.cs
   ManagerIsolationTests.cs

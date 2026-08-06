@@ -8,16 +8,13 @@ using UnitOfWork.Sample.WebApi.MinimalApi.Services;
 
 GlobalConfiguration.Setup().UseSqlite();
 
-DbSettingMapper.Add(
-    typeof(TransactionBoundDbConnection),
+DbSettingMapper.Add<TransactionBoundDbConnection>(
     DbSettingMapper.Get<SqliteConnection>(),
     true);
-DbHelperMapper.Add(
-    typeof(TransactionBoundDbConnection),
+DbHelperMapper.Add<TransactionBoundDbConnection>(
     DbHelperMapper.Get<SqliteConnection>(),
     true);
-StatementBuilderMapper.Add(
-    typeof(TransactionBoundDbConnection),
+StatementBuilderMapper.Add<TransactionBoundDbConnection>(
     StatementBuilderMapper.Get<SqliteConnection>(),
     true);
 

@@ -32,10 +32,12 @@ và execution context. Begin lồng nhau không trả lại cùng một owner/sc
 `AsyncLocal` truyền current root vào child task kế thừa execution context. Những
 task đó có thể dùng root tuần tự khi root còn active, nhưng không thể chạy hai
 command dùng chung root cùng lúc: operation lease sẽ reject overlap ngay lập tức.
-`ExecutionContext.SuppressFlow()` không nhận current root và bị reject; scope
-giữ lại sau khi root finalize cũng bị reject theo lifecycle state. Thư viện không
-cấm mọi `Task.Run`; nó cấm shared operation song song và mọi usage ngoài active
-lifecycle.
+`ExecutionContext.SuppressFlow()` không kế thừa parent root. Trong task đó,
+truy cập hoặc settle một parent scope bị giữ lại sẽ bị reject vì current root bị
+missing/foreign; tuy nhiên `BeginAsync()` không có ambient root sẽ tạo một UoW
+độc lập hợp lệ. Scope giữ lại sau khi root finalize vẫn bị reject theo lifecycle
+state. Thư viện không cấm mọi `Task.Run`; nó cấm shared operation song song và
+mọi usage ngoài active lifecycle.
 
 Repository cache được tạo đúng một lần dưới root lifecycle lock. Repository
 factory là constructor-only, đồng bộ và không làm I/O/`await`; nếu factory ném
@@ -94,8 +96,10 @@ await Task.WhenAll(command1.ExecuteNonQueryAsync(), command2.ExecuteNonQueryAsyn
 
 Task con kế thừa `ExecutionContext` cũng kế thừa ambient root. Chúng có thể dùng
 root **tuần tự** khi root còn active, nhưng operation đồng thời bị reject ngay
-lập tức. Task dùng `ExecutionContext.SuppressFlow()` không kế thừa root và bị
-reject; một scope bị giữ lại sau root finalization cũng bị reject.
+lập tức. Task dùng `ExecutionContext.SuppressFlow()` không kế thừa parent root.
+Việc access hoặc settle parent scope bị giữ lại sẽ bị reject, nhưng `BeginAsync()`
+trong task đó tạo một UoW độc lập hợp lệ; một scope bị giữ lại sau root
+finalization cũng bị reject.
 
 Factory repository có chữ ký `Func<Type, DbConnection, object>`, được gọi dưới
 root lifecycle lock, chỉ tạo object đồng bộ và **không làm I/O/`await`**. Nếu

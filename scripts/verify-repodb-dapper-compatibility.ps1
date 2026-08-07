@@ -116,7 +116,7 @@ try {
 
     $env:UOW_TEST_SQLSERVER = "Server=127.0.0.1,$SqlServerPort;Database=uow_tests;User Id=sa;Password=$password;Encrypt=False;TrustServerCertificate=True"
     $env:UOW_TEST_POSTGRESQL = "Host=127.0.0.1;Port=$PostgreSqlPort;Database=uow_tests;Username=postgres;Password=$password"
-    $env:UOW_TEST_MYSQL = "Server=127.0.0.1;Port=$MySqlPort;Database=uow_tests;User ID=root;Password=$password;SslMode=None;AllowPublicKeyRetrieval=True"
+    $env:UOW_TEST_MYSQL = "Server=127.0.0.1;Port=$MySqlPort;Database=uow_tests;User ID=root;Password=$password;SslMode=Disabled;AllowPublicKeyRetrieval=True"
 
     Push-Location $repoRoot
     try {

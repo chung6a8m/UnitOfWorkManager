@@ -35,6 +35,29 @@ function Invoke-Checked {
     }
 }
 
+function Get-TrxCounter {
+    param(
+        [Parameter(Mandatory)][System.Xml.XmlElement]$Counters,
+        [Parameter(Mandatory)][string]$Name,
+        [switch]$Required
+    )
+
+    $rawValue = $Counters.GetAttribute($Name)
+    if ([string]::IsNullOrWhiteSpace($rawValue)) {
+        if ($Required) {
+            throw "TRX Counters element is missing required '$Name' attribute."
+        }
+        return 0
+    }
+
+    $value = 0
+    if (-not [int]::TryParse($rawValue, [ref]$value)) {
+        throw "TRX counter '$Name' has invalid integer value '$rawValue'."
+    }
+
+    return $value
+}
+
 function Assert-ProviderTrx {
     param(
         [Parameter(Mandatory)][string]$ProviderName,
@@ -51,10 +74,10 @@ function Assert-ProviderTrx {
         throw "$ProviderName TRX has no ResultSummary/Counters element."
     }
 
-    $passed = [int]$counters.passed
-    $failed = [int]$counters.failed
-    $notExecuted = [int]$counters.notExecuted
-    $skipped = if ($null -eq $counters.skipped) { 0 } else { [int]$counters.skipped }
+    $passed = Get-TrxCounter -Counters $counters -Name 'passed' -Required
+    $failed = Get-TrxCounter -Counters $counters -Name 'failed' -Required
+    $notExecuted = Get-TrxCounter -Counters $counters -Name 'notExecuted' -Required
+    $skipped = Get-TrxCounter -Counters $counters -Name 'skipped'
 
     if ($passed -ne 8 -or $failed -ne 0 -or $notExecuted -ne 0 -or $skipped -ne 0) {
         throw "$ProviderName expected 8 passed, 0 failed and 0 skipped/notExecuted; actual: passed=$passed failed=$failed skipped=$skipped notExecuted=$notExecuted."

@@ -27,7 +27,7 @@ public sealed class CountingDbHelper : IDbHelper
         IDbTransaction? transaction = null)
     {
         Increment(tableName);
-        return _inner.GetFields(connection, tableName, transaction);
+        return _inner.GetFields(connection, tableName, transaction!);
     }
 
     public async Task<IEnumerable<DbField>> GetFieldsAsync(
@@ -40,7 +40,7 @@ public sealed class CountingDbHelper : IDbHelper
         return await _inner.GetFieldsAsync(
             connection,
             tableName,
-            transaction,
+            transaction!,
             cancellationToken).ConfigureAwait(false);
     }
 

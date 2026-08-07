@@ -22,7 +22,7 @@ internal sealed class InjectedDbHelper : IDbHelper
         IDbConnection connection,
         string tableName,
         IDbTransaction? transaction = null) =>
-        _inner.GetFields(connection, tableName, transaction);
+        _inner.GetFields(connection, tableName, transaction!);
 
     public async Task<IEnumerable<DbField>> GetFieldsAsync(
         IDbConnection connection,
@@ -42,7 +42,7 @@ internal sealed class InjectedDbHelper : IDbHelper
         return await _inner.GetFieldsAsync(
             connection,
             tableName,
-            transaction,
+            transaction!,
             cancellationToken).ConfigureAwait(false);
     }
 
